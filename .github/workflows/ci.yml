@@ -59,6 +59,4 @@ jobs:
         run: pip install -r requirements-dev.txt pydantic
 
       - name: Run contract tests
-        run: pytest tests/test_contracts/ -v
-        env:
-          DJANGO_SETTINGS_MODULE: wismo.settings_dev
+        run: PYTHONPATH=. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/test_contracts/ -v
