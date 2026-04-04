@@ -143,9 +143,12 @@ wismo_backend/
 │   ├── asgi.py
 │   ├── db_router.py              ← VectorRouter
 │   └── contracts/                ← shared types (pydantic)
-│       ├── enums.py              ← 13 StrEnum classes
-│       ├── p1.py, p2.py, ...     ← pipeline contracts
-│       ├── sse.py, error.py      ← API contracts
+│       ├── enums.py              ← 15 canonical enums (str, Enum)
+│       ├── p1.py, p2.py, rule.py ← pipeline contracts
+│       ├── safety.py, style.py   ← decision/style contracts
+│       ├── sse.py, outbox.py     ← API + async envelopes
+│       ├── error.py, trace.py    ← error + trace envelopes
+│       ├── case.py               ← CaseTransitionEvent
 │       └── version.py            ← CONTRACT_VERSIONS
 │
 ├── apps/
@@ -346,17 +349,18 @@ ConsentMiddleware chỉ block `/api/chat/*` — exempt `/api/auth/*`, `/api/cons
 
 ```
 wismo/contracts/
-├── enums.py        ← 13 StrEnum classes
-├── p1.py           ← P1Output, EmotionSignal
-├── p2.py           ← P2Output
-├── rule.py         ← CounselingDecision
-├── safety.py       ← GuardResult, CrisisResult, SafetyDecision
+├── enums.py        ← 15 canonical enums (str, Enum)
+├── p1.py           ← P1Output, EmotionSignal, SafetySignal
+├── p2.py           ← P2Output, ContextAssessment, RecommendedAction
+├── rule.py         ← RuleDecision (legacy name: CounselingDecision)
+├── safety.py       ← GuardResult, CrisisResult, SafetyDecision, SafetyConstraints
 ├── style.py        ← PersonalizationConfig
-├── sse.py          ← SSEEvent, ChatDonePayload
+├── sse.py          ← SSEEvent, ChatSendRequest, ChatDonePayload
 ├── outbox.py       ← OutboxEventEnvelope
 ├── error.py        ← WismoError
 ├── trace.py        ← TracePayload
-└── version.py      ← CONTRACT_VERSIONS dict
+├── case.py         ← CaseTransitionEvent
+└── version.py      ← CONTRACT_VERSIONS dict (13 immediate-need entries)
 ```
 
 **Rules:**
@@ -364,7 +368,7 @@ wismo/contracts/
 - Type chỉ dùng trong 1 app → để local trong app, không promote lên contracts
 - Promote lên contracts CHỈ KHI thật sự cross-app
 
-Chi tiết từng contract: xem `api-contracts-spec.md`.
+Chi tiết từng contract: xem `api-contracts/spec.md`.
 
 ---
 

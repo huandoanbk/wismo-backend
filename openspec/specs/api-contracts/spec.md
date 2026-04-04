@@ -12,7 +12,7 @@ Contracts được implement trong `wismo/contracts/` package (pydantic BaseMode
 |----------|---------|----------|---------------|
 | `P1Output` | `p1.v1` | SituationAnalyzer | SafetyStateMachine, RuleEngine, telemetry |
 | `P2Output` | `p2.v1` | CasePhaseEvaluator | RuleEngine, CaseManager, P9 trigger |
-| `CounselingDecision` | `rule.v1` | RuleEngine | PromptBuilder, ResponseValidator, SSE frontend_state |
+| `RuleDecision` | `rule.v1` | RuleEngine | PromptBuilder, ResponseValidator, SSE frontend_state |
 | `P3Request` | `p3-request.v1` | Orchestrator / PromptBuilder | LLM model call |
 | `P3ValidatedResponse` | `p3-response.v1` | ResponseValidator | SSE streamer, telemetry |
 | `P4ExtractionResult` | `p4.v1` | Case Context Accumulator | CaseManager |
@@ -24,7 +24,7 @@ Contracts được implement trong `wismo/contracts/` package (pydantic BaseMode
 | `ChatSendRequest` | `chat-send.v1` | Frontend | Orchestrator |
 | `ChatDonePayload` | `chat-done.v1` | Orchestrator | Frontend |
 | `CaseTransitionEvent` | `case-transition.v1` | CaseManager | Sidebar sync, telemetry |
-| `OutboxEventEnvelope` | `outbox-event.v1` | OutboxService | Dispatcher, repair jobs |
+| `OutboxEventEnvelope` | `outbox.v1` | OutboxService | Dispatcher, repair jobs |
 | `WismoError` | `error.v1` | Toàn hệ thống | Frontend, logging |
 | `TracePayload` | `trace.v1` | Request ingress | Toàn pipeline, debug |
 | `GuardResult` | `guard.v1` | InputGuard | Orchestrator |
@@ -38,6 +38,142 @@ Contracts được implement trong `wismo/contracts/` package (pydantic BaseMode
 - Thay đổi breaking (xóa/đổi tên field, đổi type) → bump version (v1 → v2) + migration path.
 - Thay đổi additive (thêm field optional) → giữ version, thêm default.
 - Mọi thay đổi breaking phải update: contract file + tests + domain spec này.
+
+### Shared enum contracts
+
+#### Requirement: Contracts package provides canonical shared enums
+The system SHALL provide a framework-independent `wismo/contracts/` package containing canonical shared enums used across backend modules.
+
+##### Scenario: Contracts package exists as plain Python import surface
+- **GIVEN** the backend repository contains the contracts foundation
+- **WHEN** a developer imports `wismo.contracts`
+- **THEN** the package imports successfully in plain Python context
+- **AND** it does not require Django app initialization
+
+##### Scenario: Contracts package does not import application modules
+- **GIVEN** files under `wismo/contracts/`
+- **WHEN** static analysis or grep checks are run
+- **THEN** there are no imports from `apps.*`
+- **AND** there are no imports from `django.*`
+
+#### Requirement: Canonical enums use string-backed Enum pattern
+The system SHALL define canonical enums using `class Xxx(str, Enum)` so values serialize consistently as strings.
+
+##### Scenario: Enum classes use string-backed enum inheritance
+- **GIVEN** `wismo/contracts/enums.py`
+- **WHEN** canonical enums are defined
+- **THEN** each enum uses `str, Enum` inheritance
+- **AND** enum values serialize as strings in Python and JSON contexts
+
+#### Requirement: Contracts package freezes 15 canonical enums
+The system SHALL define exactly 15 canonical enums in `wismo/contracts/enums.py` for immediate shared backend vocabulary.
+
+##### Scenario: ConversationSafetyState has 7 exact values
+- **GIVEN** `ConversationSafetyState`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `NORMAL`, `GUARDED`, `MODERATE_RISK_SAFE_ONLY`, `HIGH_RISK_LISTEN_ONLY`, `CRISIS_ONLY`, `BLOCKED_MINOR`, `BLOCKED_OUT_OF_SCOPE`
+
+##### Scenario: CaseStatus has 7 exact values
+- **GIVEN** `CaseStatus`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `active`, `progressing`, `paused`, `stalled`, `resolved`, `inactive`, `archived`
+- **AND** `inactive` and `archived` are treated as distinct statuses
+
+##### Scenario: CasePhase has 3 exact values
+- **GIVEN** `CasePhase`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `understand`, `illuminate`, `followup`
+
+##### Scenario: CounselingMethod has 7 exact values
+- **GIVEN** `CounselingMethod`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `LISTEN`, `ASK`, `REFLECT`, `TEACH`, `FOLLOWUP`, `REDIRECT`, `CRISIS_SAFE_ONLY`
+
+##### Scenario: CounselingSubmode has 7 exact values
+- **GIVEN** `CounselingSubmode`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `reflection`, `clarifying_question`, `body_awareness`, `story`, `resource_redirect`, `followup_check`, `none`
+
+##### Scenario: EmotionTag has 10 exact values
+- **GIVEN** `EmotionTag`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `calm`, `anxious`, `stressed`, `sad`, `angry`, `confused`, `hopeful`, `overwhelmed`, `grateful`, `neutral_unknown`
+
+##### Scenario: EmotionShift has 5 exact values
+- **GIVEN** `EmotionShift`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `stable`, `escalating`, `de_escalating`, `new_topic`, `unknown`
+
+##### Scenario: Sensitivity has 3 exact values
+- **GIVEN** `Sensitivity`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `public_safe`, `private_safe`, `clinical_sensitive`
+
+##### Scenario: ConsentState has 5 exact values
+- **GIVEN** `ConsentState`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `no_consent`, `consented_v1`, `reconsent_required`, `withdrawn_pending_delete`, `deleted`
+
+##### Scenario: SessionState has 6 exact values
+- **GIVEN** `SessionState`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `opened`, `streaming`, `completed`, `abandoned`, `timeout_closed`, `validator_rejected`
+
+##### Scenario: OutboxDeliveryState has 4 exact values
+- **GIVEN** `OutboxDeliveryState`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `pending`, `dispatched`, `failed`, `dead_letter`
+
+##### Scenario: ReadinessLevel has 4 exact values
+- **GIVEN** `ReadinessLevel`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `not_ready`, `exploring`, `insight`, `self_resolving`
+
+##### Scenario: RiskLevel has 4 exact values
+- **GIVEN** `RiskLevel`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `none`, `low`, `moderate`, `high`
+
+##### Scenario: OutOfScopeType has 6 exact values
+- **GIVEN** `OutOfScopeType`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `none`, `medication`, `diagnosis`, `trauma`, `substance`, `other`
+
+##### Scenario: Intent has 4 exact values
+- **GIVEN** `Intent`
+- **WHEN** its values are enumerated
+- **THEN** the exact set is `RELATED`, `UNRELATED`, `UNSAFE`, `META_ATTACK`
+
+#### Requirement: Enum regression tests detect canonical value drift
+The system SHALL include regression tests that fail when canonical enum values are renamed, removed, added, or case-changed unintentionally.
+
+##### Scenario: CaseStatus value change causes test failure
+- **GIVEN** regression tests pass with canonical values
+- **WHEN** a developer changes `CaseStatus.ACTIVE` from `active` to `Active`
+- **THEN** the enum regression test fails
+
+##### Scenario: Intent value change causes test failure
+- **GIVEN** regression tests pass with canonical values
+- **WHEN** a developer changes `Intent.RELATED` from `RELATED` to `related`
+- **THEN** the enum regression test fails
+
+#### Requirement: Contracts package exposes immediate-need version registry
+The system SHALL expose a version registry for immediate-need contracts in `wismo/contracts/version.py`.
+
+##### Scenario: CONTRACT_VERSIONS contains 13 entries
+- **GIVEN** `CONTRACT_VERSIONS`
+- **WHEN** its keys are counted
+- **THEN** the dictionary contains exactly 13 entries
+
+##### Scenario: get_contract_version returns expected version
+- **GIVEN** `get_contract_version('P1Output')`
+- **WHEN** the helper is called
+- **THEN** it returns `p1.v1`
+
+##### Scenario: get_contract_version rejects unknown contract name
+- **GIVEN** `get_contract_version('UnknownContract')`
+- **WHEN** the helper is called
+- **THEN** it raises `KeyError`
 
 ---
 
@@ -153,6 +289,7 @@ class SSEEvent(BaseModel):
 ```python
 class ChatDonePayload(BaseModel):
     """Payload khi turn hoàn thành. Là source of truth cuối cùng."""
+    schema_version: str = "chat-done.v1"
     turn_id: str
     assistant_message_id: str
     final_text: str                     # SOURCE OF TRUTH cho FE
@@ -235,6 +372,9 @@ class TracePayload(BaseModel):
     validator_action_id: Optional[str] = None
     trace_status: str           # started | streaming_preview | validated | persisted | completed | recovered | failed
     contract_versions: dict = {}
+    timestamps: dict[str, str] = {}
+    latencies_ms: dict[str, int] = {}
+    pipeline_steps: dict = {}
 ```
 
 ---
@@ -250,30 +390,34 @@ class CaseTransitionEvent(BaseModel):
     case_id: str
     from_phase: str             # understand | illuminate | followup
     to_phase: str
-    from_status: str            # 6 CaseStatus values
+    from_status: str            # 7 CaseStatus values
     to_status: str
     reason_codes: list[str] = []
     trigger_turn_id: str
     persisted: bool
 ```
 
-### 6.2 Outbox Event (`outbox-event.v1`)
+### 6.2 Outbox Event (`outbox.v1`)
 
 ```python
 class OutboxEventEnvelope(BaseModel):
     """Async side effect đi qua outbox table."""
-    schema_version: str = "outbox-event.v1"
+    schema_version: str = "outbox.v1"
     aggregate_type: str         # session | case | consent | account | archive
     aggregate_id: Optional[str] = None
     event_type: str
-    event_version: str
+    event_version: str = "v1"
     payload: dict
     idempotency_key: str        # UNIQUE
+    delivery_state: str = "pending"
+    created_at: Optional[str] = None
+    dispatched_at: Optional[str] = None
+    retry_count: int = 0
 ```
 
 **Event types:** `after_turn_dispatch`, `after_terminal_turn_dispatch`, `goal_strategy_dispatch`, `journey_summary_dispatch`, `guest_attach_dispatch`, `gdpr_delete_dispatch`, `consent_withdrawn_dispatch`, `archive_restore_dispatch`, `telemetry_aggregate_dispatch`
 
-**Delivery states:** `pending` → `dispatched` | `failed` → (retry) | `dead_lettered` | `replayed`
+**Delivery states:** `pending` → `dispatched` | `failed` → (retry) | `dead_letter`
 
 ### 6.3 Crisis Event (`crisis-event.v1`)
 
@@ -298,9 +442,14 @@ class CrisisEventPayload(BaseModel):
 ```python
 class GuardResult(BaseModel):
     """InputGuard output — layer 1 security."""
-    blocked: bool
+    schema_version: str = "guard.v1"
+    passed: bool = True
+    blocked: bool = False        # legacy convenience mirror; should equal (not passed)
+    block_reason: Optional[str] = None
     response: str = ""
-    reason: str = ""            # injection | empty | too_long | normal
+    sanitized_content: Optional[str] = None
+    reason: str = ""            # legacy alias: injection | empty | too_long | normal
+    flags: list[str] = []
 ```
 
 ### 7.2 Crisis Result (`crisis.v1`)
@@ -321,9 +470,11 @@ class CrisisResult(BaseModel):
 ```python
 class SafetyDecision(BaseModel):
     """SafetyStateMachine output — hard constraints."""
-    state: str                  # SafetyState enum
+    schema_version: str = "safety.v1"
+    state: str                  # ConversationSafetyState enum
     constraints: dict           # allowed_methods, banned_exercises, required_elements
-    reason: str
+    reason_codes: list[str] = []
+    persistent_flags: list[str] = []
 ```
 
 ### 7.4 Personalization Config (`style.v1`)
@@ -331,13 +482,11 @@ class SafetyDecision(BaseModel):
 ```python
 class PersonalizationConfig(BaseModel):
     """PersonalizerPolicy output — style cho P3."""
-    tone: str = "calm"
+    schema_version: str = "style.v1"
+    tone: str = "warm"
     depth: str = "moderate"
+    verbosity: str = "medium"
     response_length: str = "medium"
-    focus: str = "empathy"
-    include_exercise: bool = True
-    directiveness: str = "moderate"
-    suggestion_mode: str = "cautious"
     notes: list[str] = []
 ```
 
@@ -348,8 +497,8 @@ class PersonalizationConfig(BaseModel):
 | Machine | States | Source of truth | Owner |
 |---------|--------|-----------------|-------|
 | **ConsentLifecycle** | no_consent, consented_v1, reconsent_required, withdrawn_pending_delete, deleted | PostgreSQL gdpr_consents | ConsentService |
-| **ConversationSafety** | NORMAL, MODERATE_RISK, HIGH_RISK_LISTEN_ONLY, CRISIS_ONLY, OUT_OF_SCOPE | Runtime + persistent flags | SafetyStateMachine |
-| **CaseLifecycle** | active, progressing, paused, stalled, resolved, inactive | PostgreSQL user_cases | CaseManager |
+| **ConversationSafety** | NORMAL, GUARDED, MODERATE_RISK_SAFE_ONLY, HIGH_RISK_LISTEN_ONLY, CRISIS_ONLY, BLOCKED_MINOR, BLOCKED_OUT_OF_SCOPE | Runtime + persistent flags | SafetyStateMachine |
+| **CaseLifecycle** | active, progressing, paused, stalled, resolved, inactive, archived | PostgreSQL user_cases | CaseManager |
 | **CasePhase** | understand, illuminate, followup | PostgreSQL user_cases.phase | P2, CaseManager |
 | **SessionRuntime** | opened, streaming, completed, abandoned, timeout_closed | DB sessions + runtime | SessionManager |
 
@@ -363,16 +512,18 @@ Implement trong `wismo/contracts/enums.py`. Thay đổi value = breaking change.
 
 | Enum | Values |
 |------|--------|
-| `SafetyState` | normal, moderate_risk, high_risk_listen_only, crisis_only, out_of_scope |
-| `CaseStatus` | active, progressing, resolved, paused, inactive, stalled |
+| `ConversationSafetyState` | NORMAL, GUARDED, MODERATE_RISK_SAFE_ONLY, HIGH_RISK_LISTEN_ONLY, CRISIS_ONLY, BLOCKED_MINOR, BLOCKED_OUT_OF_SCOPE |
+| `CaseStatus` | active, progressing, paused, stalled, resolved, inactive, archived |
 | `CasePhase` | understand, illuminate, followup |
-| `ConsentState` | no_consent, consented_v1, reconsent_required, withdrawn_pending_delete, deleted |
-| `CounselingMethod` | LISTEN, INQUIRY, TEACH, CRISIS, REDIRECT, CLOSE |
-| `EmotionTag` | calm, anxious, stressed, sad, angry, confused, hopeful, overwhelmed, frustrated, fearful, thoughtful |
+| `CounselingMethod` | LISTEN, ASK, REFLECT, TEACH, FOLLOWUP, REDIRECT, CRISIS_SAFE_ONLY |
+| `CounselingSubmode` | reflection, clarifying_question, body_awareness, story, resource_redirect, followup_check, none |
+| `EmotionTag` | calm, anxious, stressed, sad, angry, confused, hopeful, overwhelmed, grateful, neutral_unknown |
+| `EmotionShift` | stable, escalating, de_escalating, new_topic, unknown |
 | `Sensitivity` | public_safe, private_safe, clinical_sensitive |
-| `SessionState` | opened, streaming, completed, abandoned, timeout_closed |
-| `OutboxDeliveryState` | pending, dispatched, failed, dead_lettered, replayed |
-| `CrisisTier` | A, B, C, D |
-| `UserTier` | free, pro |
-| `RetentionPolicy` | permanent, case_duration, user_controlled, auto_expire_90d |
-| `UsageScope` | all, personalization_only, safety_only |
+| `ConsentState` | no_consent, consented_v1, reconsent_required, withdrawn_pending_delete, deleted |
+| `SessionState` | opened, streaming, completed, abandoned, timeout_closed, validator_rejected |
+| `OutboxDeliveryState` | pending, dispatched, failed, dead_letter |
+| `ReadinessLevel` | not_ready, exploring, insight, self_resolving |
+| `RiskLevel` | none, low, moderate, high |
+| `OutOfScopeType` | none, medication, diagnosis, trauma, substance, other |
+| `Intent` | RELATED, UNRELATED, UNSAFE, META_ATTACK |

@@ -70,9 +70,9 @@ User's latest message: "{message}"
 Return ONLY JSON:
 {{
   "emotion": {{
-    "primary": "calm|anxious|stressed|sad|angry|confused|hopeful|overwhelmed|grateful",
+    "primary": "calm|anxious|stressed|sad|angry|confused|hopeful|overwhelmed|grateful|neutral_unknown",
     "severity": 0-10,
-    "shift": "stable|escalating|de-escalating|new_topic"
+    "shift": "stable|escalating|de_escalating|new_topic|unknown"
   }},
   "intent": "RELATED|UNRELATED|UNSAFE|META_ATTACK",
   "safety": {{
@@ -111,9 +111,9 @@ READINESS GUIDE:
 | Field | Type | Allowed | Required | Fallback |
 |-------|------|---------|:---:|--------|
 | `schema_version` | string | `p1.v1` | ✓ | `p1.v1` |
-| `emotion.primary` | string | 9 values | ✓ | `calm` |
+| `emotion.primary` | string | 10 values | ✓ | `neutral_unknown` |
 | `emotion.severity` | int | 0–10 | ✓ | `0` |
-| `emotion.shift` | string | 4 values | ✓ | `stable` |
+| `emotion.shift` | string | 5 values | ✓ | `unknown` |
 | `intent` | string | `RELATED\|UNRELATED\|UNSAFE\|META_ATTACK` | ✓ | `RELATED` |
 | `safety.crisis` | bool | — | ✓ | `false` |
 | `safety.contraindication.risk_level` | string | `none\|low\|moderate\|high` | ✓ | `none` |
@@ -164,7 +164,7 @@ Return ONLY JSON:
     "missing_info": ["problem_detail|trigger|people|pattern|goal|tried_before"]
   }},
   "phase": "understand|illuminate|followup",
-  "status": "active|progressing|paused|resolved|stalled|inactive",
+  "status": "active|progressing|paused|stalled|resolved|inactive|archived",
   "should_transition": true/false,
   "next_phase": "understand|illuminate|followup|null",
   "readiness": "not_ready|exploring|insight|self_resolving",
@@ -189,7 +189,7 @@ TRANSITION RULE: should_transition=true ONLY when ALL of:
 | `schema_version` = `p2.v1` | ✓ | — |
 | `context_assessment.*` (4 booleans + missing_info) | ✓ | all `false`, `[]` |
 | `phase` = `understand\|illuminate\|followup` | ✓ | giữ phase hiện tại |
-| `status` = 6 values | ✓ | `active` |
+| `status` = 7 values | ✓ | `active` |
 | `should_transition` | ✓ | `false` |
 | `next_phase` | ✓ | `null` |
 | `readiness` = 4 values | ✓ | `exploring` |
@@ -723,16 +723,16 @@ Khai vấn (Socratic inquiry) rules:
 METHOD_CONFIG = {
     # Phase 1 — understand
     'understand_listen':  {'context_depth': 'LIGHT',  'rag_chunks': 0, 'summary': 'none'},
-    'understand_inquiry': {'context_depth': 'LIGHT',  'rag_chunks': 0, 'summary': 'none'},
+    'understand_ask':     {'context_depth': 'LIGHT',  'rag_chunks': 0, 'summary': 'none'},
 
     # Phase 2 — illuminate
     'illuminate_listen':  {'context_depth': 'LIGHT',  'rag_chunks': 0, 'summary': 'session'},
-    'illuminate_inquiry': {'context_depth': 'MEDIUM', 'rag_chunks': 0, 'summary': 'both'},
+    'illuminate_reflect': {'context_depth': 'MEDIUM', 'rag_chunks': 0, 'summary': 'both'},
     'illuminate_teach':   {'context_depth': 'FULL',   'rag_chunks': 3, 'summary': 'both'},
 
     # Phase 3 — followup
     'followup_listen':    {'context_depth': 'LIGHT',  'rag_chunks': 0, 'summary': 'journey'},
-    'followup_inquiry':   {'context_depth': 'LIGHT',  'rag_chunks': 0, 'summary': 'journey'},
+    'followup_followup':  {'context_depth': 'LIGHT',  'rag_chunks': 0, 'summary': 'journey'},
 }
 
 DEPTH_CONFIG = {
@@ -830,7 +830,7 @@ class PromptBuilder:
 
 ## 14. RuleEngine — Deterministic Counseling Decisions
 
-RuleEngine là lớp **pure Python, không LLM**. Nhận P1Output + P2Output + safety state + profile/case → trả `CounselingDecision`.
+RuleEngine là lớp **pure Python, không LLM**. Nhận P1Output + P2Output + safety state + profile/case → trả `RuleDecision` (legacy name trong vài tài liệu cũ: `CounselingDecision`).
 
 ### 14.1 RuleDecision Contract (`rule.v1`)
 
@@ -840,7 +840,7 @@ RuleEngine là lớp **pure Python, không LLM**. Nhận P1Output + P2Output + s
 | `submode` | string | `reflection\|clarifying_question\|body_awareness\|story\|resource_redirect\|followup_check\|none` |
 | `allow_rag` | bool | `true\|false` |
 | `allow_memory` | bool | registered=`true`; guest=session only |
-| `safety_state` | string | `SAFE\|CAUTION\|MODERATE_RISK_SAFE_ONLY\|HIGH_RISK_SAFE_ONLY\|BLOCKED` |
+| `safety_state` | string | `NORMAL\|GUARDED\|MODERATE_RISK_SAFE_ONLY\|HIGH_RISK_LISTEN_ONLY\|CRISIS_ONLY\|BLOCKED_MINOR\|BLOCKED_OUT_OF_SCOPE` |
 | `response_template` | string | template key |
 
 ### 14.2 Rule Priority Order (cao → thấp)
@@ -858,53 +858,53 @@ class RuleEngine:
 
         # ─── PRIORITY 1: Safety hard gates ───
         if safety_constraints['state'] == 'CRISIS_ONLY':
-            return CounselingDecision(method='CRISIS', rag_needed=False, ...)
+            return RuleDecision(mode='CRISIS_SAFE_ONLY', allow_rag=False, ...)
 
         if safety_constraints['state'] == 'BLOCKED_OUT_OF_SCOPE':
-            return CounselingDecision(method='REDIRECT', rag_needed=False, ...)
+            return RuleDecision(mode='REDIRECT', allow_rag=False, ...)
 
         if safety_constraints['state'] in ('HIGH_RISK_LISTEN_ONLY', 'MODERATE_RISK_SAFE_ONLY'):
-            return CounselingDecision(method='LISTEN', rag_needed=False, ...)
+            return RuleDecision(mode='LISTEN', allow_rag=False, ...)
 
         # ─── PRIORITY 2: Session ending ───
         if p1_signals.get('session_ending', {}).get('is_ending'):
             submode = 'grounding_close' if severity >= 5 else 'warm_close'
-            return CounselingDecision(method='CLOSE', sub_action=submode, rag_needed=False)
+            return RuleDecision(mode='FOLLOWUP', submode='followup_check', allow_rag=False)
 
         # ─── PRIORITY 3: Emotional severity override ───
         if severity >= 8:
-            return CounselingDecision(
-                method='LISTEN', sub_action='deep_empathy', rag_needed=False,
+            return RuleDecision(
+                mode='LISTEN', submode='none', allow_rag=False,
                 reasoning='R10: severity >= 8',
                 context_config={'memory_items': 2, 'rag_chunks': 0, 'history_turns': 3}
             )
 
         if severity >= 6:
-            return CounselingDecision(
-                method='LISTEN', sub_action='empathy', rag_needed=False,
+            return RuleDecision(
+                mode='LISTEN', submode='none', allow_rag=False,
                 reasoning='R11: severity 6-7',
                 context_config={'memory_items': 2, 'rag_chunks': 0, 'history_turns': 3}
             )
 
         # ─── PRIORITY 4: Readiness not_ready ───
         if readiness == 'not_ready':
-            return CounselingDecision(
-                method='LISTEN', sub_action='validate', rag_needed=False,
+            return RuleDecision(
+                mode='LISTEN', submode='none', allow_rag=False,
                 reasoning='R12: not_ready'
             )
 
         # ─── PRIORITY 5: User reporting result ───
         if content.get('is_reporting_result'):
-            return CounselingDecision(
-                method='LISTEN', sub_action='celebrate', rag_needed=False,
+            return RuleDecision(
+                mode='LISTEN', submode='none', allow_rag=False,
                 reasoning='R13: reporting result'
             )
 
         # ─── PHASE 1: Understand ───
         if phase == 'understand':
             missing = p2_eval.get('context_assessment', {}).get('missing_info', [])
-            return CounselingDecision(
-                method='INQUIRY', sub_action='gather_context', rag_needed=False,
+            return RuleDecision(
+                mode='ASK', submode='clarifying_question', allow_rag=False,
                 prompt_instruction=f'Ask about: {", ".join(missing)}. Max 1 question.',
                 reasoning=f'R30: understand, missing={missing}',
                 context_config={'memory_items': 2, 'rag_chunks': 0, 'history_turns': 3}
@@ -914,8 +914,8 @@ class RuleEngine:
         if phase == 'illuminate':
             # User self-resolving → reflect back
             if readiness == 'self_resolving':
-                return CounselingDecision(
-                    method='INQUIRY', sub_action='reflect_back', rag_needed=False,
+                return RuleDecision(
+                    mode='REFLECT', submode='reflection', allow_rag=False,
                     prompt_instruction='Turn it back: "Từ những gì bạn đã thấy, bạn MUỐN làm gì?"',
                     reasoning='R32: self_resolving'
                 )
@@ -923,8 +923,8 @@ class RuleEngine:
             # User has insight → teach with wisdom story
             if readiness == 'insight':
                 strategy = (case.counseling_strategy or {}).get('strategy', {})
-                return CounselingDecision(
-                    method='TEACH', sub_action='share_wisdom', rag_needed=True,
+                return RuleDecision(
+                    mode='TEACH', submode='story', allow_rag=True,
                     rag_query=strategy.get('relevant_teaching', ''),
                     prompt_instruction='Share story/wisdom. Ask what it means to them.',
                     reasoning='R40: insight → teach',
@@ -933,15 +933,15 @@ class RuleEngine:
 
             # User has question + exploring → teach
             if content.get('has_question') and readiness == 'exploring':
-                return CounselingDecision(
-                    method='TEACH', sub_action='explain_concept', rag_needed=True,
+                return RuleDecision(
+                    mode='TEACH', submode='story', allow_rag=True,
                     rag_query=' '.join(content.get('topic_tags', [])),
                     reasoning='R41: has_question'
                 )
 
             # Default illuminate → deepen with inquiry
-            return CounselingDecision(
-                method='INQUIRY', sub_action='deepen', rag_needed=False,
+            return RuleDecision(
+                mode='REFLECT', submode='reflection', allow_rag=False,
                 prompt_instruction='Socratic question. Help user go deeper.',
                 reasoning='R31: illuminate + exploring',
                 context_config={'memory_items': 3, 'rag_chunks': 0, 'history_turns': 5}
@@ -949,15 +949,15 @@ class RuleEngine:
 
         # ─── PHASE 3: Followup ───
         if phase == 'followup':
-            return CounselingDecision(
-                method='INQUIRY', sub_action='check_progress', rag_needed=False,
+            return RuleDecision(
+                mode='FOLLOWUP', submode='followup_check', allow_rag=False,
                 prompt_instruction='Ask about progress. Validate effort.',
                 reasoning='R50: followup'
             )
 
         # Default fallback
-        return CounselingDecision(
-            method='INQUIRY', sub_action='deepen', rag_needed=False,
+        return RuleDecision(
+            mode='REFLECT', submode='reflection', allow_rag=False,
             reasoning='R99: default'
         )
 ```
@@ -966,12 +966,12 @@ class RuleEngine:
 
 ```
 R_ILLUMINATE_3: User hỏi "tôi phải làm gì?"
-  → INQUIRY/reflect_back
+  → REFLECT/reflection
   → "Từ những gì bạn đã thấy, bạn MUỐN làm gì?"
   → KHÔNG BAO GIỜ đưa đáp án
 
 R_ILLUMINATE_4: User tự đề xuất giải pháp
-  → LISTEN/validate + INQUIRY/deepen
+  → LISTEN/validate + REFLECT/reflection
   → "Đó là ý tưởng của bạn. Điều gì sẽ giúp bạn thực hiện?"
   → Validate rồi deepen, KHÔNG suggest thêm
 
@@ -1013,7 +1013,7 @@ PER DAY:
 ```
 apps/chat/services/
 ├── prompt_builder.py   ← PromptBuilder, METHOD_CONFIG, DEPTH_CONFIG
-├── rule_engine.py      ← RuleEngine, CounselingDecision
+├── rule_engine.py      ← RuleEngine, RuleDecision
 
 apps/counseling/services/
 ├── situation_analyzer.py   ← P1 call + parse P1Output
