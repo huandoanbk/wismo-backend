@@ -1,19 +1,31 @@
-"""WismoError contract — canonical error envelope."""
+"""Error helpers for foundation APIs."""
 
-from typing import Any
+from __future__ import annotations
 
-from pydantic import BaseModel
+from dataclasses import dataclass
 
 
-class WismoError(BaseModel):
-    """Canonical error contract for WISMO API responses."""
+@dataclass(frozen=True)
+class WismoError:
+    """Small structured error payload used by API views.
 
-    schema_version: str = "error.v1"
-    error_code: str
-    error_category: str
-    http_status: int
-    frontend_state: str = "error"
-    user_message: str
-    retryable: bool = False
-    request_id: str | None = None
-    details: dict[str, Any] = {}
+    Always serializes as keyword-only: {"error": code}.
+    No plain-text message field — keeps FE/BFF contract stable.
+    """
+
+    code: str
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the canonical keyword-only error payload."""
+
+        return {"error": self.code}
+
+
+def keyword_error_payload(code: str) -> dict[str, str]:
+    """Build a keyword-only API error payload dict.
+
+    Use this in views for ad-hoc error responses so all foundation
+    error payloads share the same shape.
+    """
+
+    return {"error": code}

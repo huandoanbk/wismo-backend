@@ -1,0 +1,17 @@
+{% extends "admin/change_list.html" %}
+
+{% block content %}
+  {% if knowledge_summary %}
+    <div style="margin: 0 0 16px 0; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px;">
+      <h2 style="margin: 0 0 8px 0;">Knowledge Corpus Summary (Vector DB)</h2>
+      <div>
+        <strong>Documents:</strong> {{ knowledge_summary.documents }} |
+        <strong>Active Documents:</strong> {{ knowledge_summary.active_documents }} |
+        <strong>Chunks:</strong> {{ knowledge_summary.chunks }} |
+        <strong>Active Chunks:</strong> {{ knowledge_summary.active_chunks }} |
+        <strong>Embeddings:</strong> {{ knowledge_summary.embeddings }}
+      </div>
+    </div>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

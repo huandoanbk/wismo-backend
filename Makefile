@@ -1,13 +1,18 @@
 PYTHON=.venv/bin/python
+PYTEST=.venv/bin/pytest
+RUFF=.venv/bin/ruff
 
-dev-up:
-	docker compose -f docker-compose.dev.yml up -d
-
-dev-down:
-	docker compose -f docker-compose.dev.yml down
+check:
+	$(PYTHON) manage.py check
 
 test:
-	$(PYTHON) -m pytest
+	$(PYTEST)
+
+lint:
+	$(RUFF) check .
+
+migrations-check:
+	$(PYTHON) manage.py makemigrations --check --dry-run
 
 migrate:
 	$(PYTHON) manage.py migrate --database=default

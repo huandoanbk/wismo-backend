@@ -1,0 +1,112 @@
+{% extends "admin/change_list.html" %}
+
+{% block content %}
+  {% if usage_report %}
+    <div style="margin: 0 0 16px 0; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px;">
+      <h2 style="margin: 0 0 10px 0;">LLM Gateway Usage Report</h2>
+      <form method="get" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 0 0 12px 0;">
+        {% for key, value in request.GET.items %}
+          {% if key != "report_start" and key != "report_end" and key != "report_gateway" and key != "p" %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}">
+          {% endif %}
+        {% endfor %}
+        <div>
+          <label for="id_report_start">From</label><br>
+          <input id="id_report_start" type="date" name="report_start" value="{{ usage_report.filters.report_start }}">
+        </div>
+        <div>
+          <label for="id_report_end">To</label><br>
+          <input id="id_report_end" type="date" name="report_end" value="{{ usage_report.filters.report_end }}">
+        </div>
+        <div>
+          <label for="id_report_gateway">Gateway</label><br>
+          <select id="id_report_gateway" name="report_gateway">
+            <option value="">All gateways</option>
+            {% for gateway_name in usage_report.gateway_choices %}
+              <option value="{{ gateway_name }}" {% if usage_report.filters.report_gateway == gateway_name %}selected{% endif %}>
+                {{ gateway_name }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <button type="submit" class="button">Apply</button>
+          <a href="?" class="button">Reset</a>
+        </div>
+      </form>
+
+      <div style="margin: 0 0 10px 0;">
+        <strong>Total events:</strong> {{ usage_report.totals.event_count }} |
+        <strong>Success:</strong> {{ usage_report.totals.success_count }} |
+        <strong>Failed:</strong> {{ usage_report.totals.failed_count }} |
+        <strong>Billable tokens:</strong> {{ usage_report.totals.total_billable_tokens }} |
+        <strong>Observed tokens:</strong> {{ usage_report.totals.total_observed_tokens }} |
+        <strong>Avg latency:</strong> {{ usage_report.totals.avg_latency_ms }} ms
+      </div>
+
+      <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="text-align: left; border-bottom: 1px solid #d9d9d9; padding: 6px;">Gateway</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Events</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Success</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Failed</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Billable Tokens</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Observed Tokens</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Avg Latency (ms)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in usage_report.gateways %}
+            <tr>
+              <td style="padding: 6px; border-bottom: 1px solid #f0f0f0;">{{ row.gateway_name }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.event_count }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.success_count }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.failed_count }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.total_billable_tokens }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.total_observed_tokens }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.avg_latency_ms }}</td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="7" style="padding: 8px;">No usage rows for the selected filters.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h3 style="margin: 14px 0 8px 0;">By Operation</h3>
+      <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="text-align: left; border-bottom: 1px solid #d9d9d9; padding: 6px;">Operation</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Events</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Success</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Failed</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Billable Tokens</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Observed Tokens</th>
+            <th style="text-align: right; border-bottom: 1px solid #d9d9d9; padding: 6px;">Avg Latency (ms)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in usage_report.operations %}
+            <tr>
+              <td style="padding: 6px; border-bottom: 1px solid #f0f0f0;">{{ row.operation_key }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.event_count }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.success_count }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.failed_count }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.total_billable_tokens }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.total_observed_tokens }}</td>
+              <td style="padding: 6px; text-align: right; border-bottom: 1px solid #f0f0f0;">{{ row.avg_latency_ms }}</td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="7" style="padding: 8px;">No operation rows for the selected filters.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

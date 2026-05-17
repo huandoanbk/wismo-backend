@@ -1,62 +1,27 @@
-"""Regression coverage for canonical contract enums and version helpers."""
+"""Contract enum tests for the MVP foundation."""
 
-import pytest
-
-from wismo.contracts import (
-    CONTRACT_VERSIONS,
+from wismo.contracts.enums import (
     CasePhase,
     CaseStatus,
-    ConsentState,
-    ConversationSafetyState,
-    CounselingMethod,
-    CounselingSubmode,
-    EmotionShift,
-    EmotionTag,
-    Intent,
-    OutOfScopeType,
-    OutboxDeliveryState,
-    ReadinessLevel,
-    RiskLevel,
-    Sensitivity,
-    SessionState,
-    get_contract_version,
+    OperationKey,
+    ResponseMethod,
+    Step12FinalizationStatus,
+    TriageDecision,
+    TurnStatus,
+    UsageAccountingStatus,
 )
 
 
-def test_conversation_safety_state_values_exact() -> None:
-    assert {item.value for item in ConversationSafetyState} == {
-        "NORMAL",
-        "GUARDED",
-        "MODERATE_RISK_SAFE_ONLY",
-        "HIGH_RISK_LISTEN_ONLY",
-        "CRISIS_ONLY",
-        "BLOCKED_MINOR",
-        "BLOCKED_OUT_OF_SCOPE",
-    }
+def values(enum_cls) -> set[str]:
+    """Return enum values for assertion readability."""
+
+    return {member.value for member in enum_cls}
 
 
-def test_case_status_values_exact() -> None:
-    assert {item.value for item in CaseStatus} == {
-        "active",
-        "progressing",
-        "paused",
-        "stalled",
-        "resolved",
-        "inactive",
-        "archived",
-    }
+def test_response_methods_match_mvp_foundation() -> None:
+    """ResponseMethod contains conversational and control methods from MVP spec."""
 
-
-def test_case_phase_values_exact() -> None:
-    assert {item.value for item in CasePhase} == {
-        "understand",
-        "illuminate",
-        "followup",
-    }
-
-
-def test_counseling_method_values_exact() -> None:
-    assert {item.value for item in CounselingMethod} == {
+    assert values(ResponseMethod) == {
         "LISTEN",
         "ASK",
         "REFLECT",
@@ -64,144 +29,48 @@ def test_counseling_method_values_exact() -> None:
         "FOLLOWUP",
         "REDIRECT",
         "CRISIS_SAFE_ONLY",
+        "BLOCKED_MINOR",
+        "REFUSAL",
+        "SPAM_REPLY",
     }
 
 
-def test_counseling_submode_values_exact() -> None:
-    assert {item.value for item in CounselingSubmode} == {
-        "reflection",
-        "clarifying_question",
-        "body_awareness",
-        "story",
-        "resource_redirect",
-        "followup_check",
-        "none",
+def test_core_runtime_enums_match_mvp_foundation() -> None:
+    """Core runtime enums stay aligned with the BE implementation plan."""
+
+    assert values(TriageDecision) == {
+        "crisis_hotline_immediate",
+        "blocked_minor",
+        "hard_redirect",
+        "policy_bypass_refusal",
+        "spam_or_non_conversational",
+        "continue_to_full_reasoning",
     }
-
-
-def test_emotion_tag_values_exact() -> None:
-    assert {item.value for item in EmotionTag} == {
-        "calm",
-        "anxious",
-        "stressed",
-        "sad",
-        "angry",
-        "confused",
-        "hopeful",
-        "overwhelmed",
-        "grateful",
-        "neutral_unknown",
-    }
-
-
-def test_emotion_shift_values_exact() -> None:
-    assert {item.value for item in EmotionShift} == {
-        "stable",
-        "escalating",
-        "de_escalating",
-        "new_topic",
-        "unknown",
-    }
-
-
-def test_sensitivity_values_exact() -> None:
-    assert {item.value for item in Sensitivity} == {
-        "public_safe",
-        "private_safe",
-        "clinical_sensitive",
-    }
-
-
-def test_consent_state_values_exact() -> None:
-    assert {item.value for item in ConsentState} == {
-        "no_consent",
-        "consented_v1",
-        "reconsent_required",
-        "withdrawn_pending_delete",
-        "deleted",
-    }
-
-
-def test_session_state_values_exact() -> None:
-    assert {item.value for item in SessionState} == {
-        "opened",
-        "streaming",
-        "completed",
-        "abandoned",
-        "timeout_closed",
-        "validator_rejected",
-    }
-
-
-def test_outbox_delivery_state_values_exact() -> None:
-    assert {item.value for item in OutboxDeliveryState} == {
+    assert values(CaseStatus) == {"active", "progressing", "paused", "resolved", "inactive", "stalled"}
+    assert values(CasePhase) == {"understand", "illuminate", "followup"}
+    assert values(TurnStatus) == {"received", "processing", "completed", "failed"}
+    assert values(UsageAccountingStatus) == {"pending", "finalized", "partial", "failed"}
+    assert values(Step12FinalizationStatus) == {
         "pending",
-        "dispatched",
+        "processing",
+        "finalized",
+        "partial",
         "failed",
-        "dead_letter",
     }
 
 
-def test_readiness_level_values_exact() -> None:
-    assert {item.value for item in ReadinessLevel} == {
-        "not_ready",
-        "exploring",
-        "insight",
-        "self_resolving",
+def test_operation_keys_include_mvp_llm_operations() -> None:
+    """OperationKey covers all LLM operations named by the MVP spec."""
+
+    assert values(OperationKey) == {
+        "triage_classifier",
+        "case_classifier",
+        "full_reasoning",
+        "response_generation",
+        "response_validation",
+        "retrieval_query_builder",
+        "retrieval_query_embedding",
+        "retrieval_stitch_validator",
+        "context_summary_updater",
+        "long_term_memory_extractor",
     }
-
-
-def test_risk_level_values_exact() -> None:
-    assert {item.value for item in RiskLevel} == {
-        "none",
-        "low",
-        "moderate",
-        "high",
-    }
-
-
-def test_out_of_scope_type_values_exact() -> None:
-    assert {item.value for item in OutOfScopeType} == {
-        "none",
-        "medication",
-        "diagnosis",
-        "trauma",
-        "substance",
-        "other",
-    }
-
-
-def test_intent_values_exact() -> None:
-    assert {item.value for item in Intent} == {
-        "RELATED",
-        "UNRELATED",
-        "UNSAFE",
-        "META_ATTACK",
-    }
-
-
-def test_contract_versions_13_entries() -> None:
-    assert set(CONTRACT_VERSIONS) == {
-        "P1Output",
-        "P2Output",
-        "RuleDecision",
-        "SafetyDecision",
-        "GuardResult",
-        "SSEEvent",
-        "ChatDonePayload",
-        "ChatSendRequest",
-        "OutboxEventEnvelope",
-        "WismoError",
-        "TracePayload",
-        "CaseTransitionEvent",
-        "PersonalizationConfig",
-    }
-
-
-def test_get_contract_version_p1() -> None:
-    assert get_contract_version("P1Output") == "p1.v1"
-
-
-def test_get_contract_version_unknown_raises() -> None:
-    with pytest.raises(KeyError, match="Unknown contract: UnknownContract"):
-        get_contract_version("UnknownContract")

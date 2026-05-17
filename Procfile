@@ -1,3 +1,0 @@
-web: DJANGO_SETTINGS_MODULE=wismo.settings_dev .venv/bin/gunicorn wismo.asgi:application -k uvicorn.workers.UvicornWorker --workers 2 --preload --timeout 120 --bind 0.0.0.0:8000
-worker: DJANGO_SETTINGS_MODULE=wismo.settings_dev .venv/bin/celery -A wismo worker --loglevel=info --concurrency=2
-beat: DJANGO_SETTINGS_MODULE=wismo.settings_dev .venv/bin/celery -A wismo beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler

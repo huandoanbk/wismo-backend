@@ -1,0 +1,51 @@
+{% extends "admin/change_list.html" %}
+
+{% block content %}
+  <div style="margin: 0 0 16px 0; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px;">
+    <h2 style="margin: 0 0 10px 0;">Runtime Config Defaults</h2>
+    <p style="margin: 0 0 10px 0;">
+      Canonical runtime config keys and default payloads used by runtime services.
+      <a class="button" href="?sync_defaults=1">Sync Missing Defaults</a>
+    </p>
+    <table style="width: 100%; border-collapse: collapse;">
+      <thead>
+        <tr>
+          <th style="text-align: left; border-bottom: 1px solid #d9d9d9; padding: 6px;">Key</th>
+          <th style="text-align: left; border-bottom: 1px solid #d9d9d9; padding: 6px;">Status</th>
+          <th style="text-align: left; border-bottom: 1px solid #d9d9d9; padding: 6px;">Description</th>
+          <th style="text-align: left; border-bottom: 1px solid #d9d9d9; padding: 6px;">Default Value</th>
+          <th style="text-align: left; border-bottom: 1px solid #d9d9d9; padding: 6px;">Current Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in runtime_config_defaults %}
+          <tr>
+            <td style="padding: 6px; border-bottom: 1px solid #f0f0f0;"><code>{{ row.key }}</code></td>
+            <td style="padding: 6px; border-bottom: 1px solid #f0f0f0;">
+              {% if row.exists %}
+                {% if row.is_active %}
+                  active
+                {% else %}
+                  inactive
+                {% endif %}
+                {% if row.is_default_match %}| default{% else %}| customized{% endif %}
+              {% else %}
+                missing
+              {% endif %}
+            </td>
+            <td style="padding: 6px; border-bottom: 1px solid #f0f0f0;">{{ row.description }}</td>
+            <td style="padding: 6px; border-bottom: 1px solid #f0f0f0;"><pre style="margin: 0; white-space: pre-wrap;">{{ row.default_value_json }}</pre></td>
+            <td style="padding: 6px; border-bottom: 1px solid #f0f0f0;">
+              {% if row.current_value_json %}
+                <pre style="margin: 0; white-space: pre-wrap;">{{ row.current_value_json }}</pre>
+              {% else %}
+                <span>-</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ block.super }}
+{% endblock %}

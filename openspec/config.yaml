@@ -7,27 +7,24 @@ context: |
   - Thuật ngữ kỹ thuật: API, REST, SSE, JWT, CRUD, ORM, UUID, FK, PK...
   - Tên code: class, function, variable, enum, contract, file path
   - Code examples và comments trong code block
-  - Tên thư viện/framework: Django, DRF, Celery, Redis, PostgreSQL, pgvector, pydantic, pytest
+  - Tên thư viện/framework: Django, DRF, PostgreSQL, pgvector, pydantic, pytest
   - Git terminology: branch, merge, commit, PR
 
   Project: WISMO Backend
-  Tech stack: Django 5.2 LTS, DRF, Celery, Redis, PostgreSQL 16, pgvector
+  Tech stack: Django 5.2 LTS, DRF, PostgreSQL 16, pgvector
   Language runtime: Python 3.11
 
-  Monorepo apps:
+  MVP foundation apps:
   - accounts
+  - consents
   - chat
-  - counseling
-  - personalization
+  - runtime
+  - llm_ops
   - memory
   - knowledge
-  - llm
-  - safety
-  - telemetry
+  - admin_config
 
   OpenSpec execution rules:
   - Worker chỉ đọc các spec files được liệt kê trong proposal/design "Spec References".
   - Không load toàn bộ specs folder nếu change đã chỉ rõ spec refs.
-  - RuleEngine thuộc prompts/spec.md.
-  - ResponseValidator thuộc llm/spec.md.
-  - safety/spec.md không phải nguồn chi tiết cho RuleEngine hoặc ResponseValidator.
+  - `project-spec/` là source chính cho MVP foundation khi không có active change.

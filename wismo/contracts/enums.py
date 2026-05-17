@@ -1,42 +1,10 @@
-"""Canonical string-backed enums shared across WISMO contracts."""
+"""Canonical enums for the MVP backend foundation."""
 
 from enum import StrEnum
 
 
-class ConversationSafetyState(StrEnum):
-    """Canonical safety states for conversation handling."""
-
-    NORMAL = "NORMAL"
-    GUARDED = "GUARDED"
-    MODERATE_RISK_SAFE_ONLY = "MODERATE_RISK_SAFE_ONLY"
-    HIGH_RISK_LISTEN_ONLY = "HIGH_RISK_LISTEN_ONLY"
-    CRISIS_ONLY = "CRISIS_ONLY"
-    BLOCKED_MINOR = "BLOCKED_MINOR"
-    BLOCKED_OUT_OF_SCOPE = "BLOCKED_OUT_OF_SCOPE"
-
-
-class CaseStatus(StrEnum):
-    """Canonical lifecycle statuses for a case."""
-
-    ACTIVE = "active"
-    PROGRESSING = "progressing"
-    PAUSED = "paused"
-    STALLED = "stalled"
-    RESOLVED = "resolved"
-    INACTIVE = "inactive"
-    ARCHIVED = "archived"
-
-
-class CasePhase(StrEnum):
-    """Canonical phases for case progression."""
-
-    UNDERSTAND = "understand"
-    ILLUMINATE = "illuminate"
-    FOLLOWUP = "followup"
-
-
-class CounselingMethod(StrEnum):
-    """Canonical runtime counseling methods."""
+class ResponseMethod(StrEnum):
+    """Runtime response methods shared by conversational and control paths."""
 
     LISTEN = "LISTEN"
     ASK = "ASK"
@@ -45,116 +13,121 @@ class CounselingMethod(StrEnum):
     FOLLOWUP = "FOLLOWUP"
     REDIRECT = "REDIRECT"
     CRISIS_SAFE_ONLY = "CRISIS_SAFE_ONLY"
+    BLOCKED_MINOR = "BLOCKED_MINOR"
+    REFUSAL = "REFUSAL"
+    SPAM_REPLY = "SPAM_REPLY"
 
 
-class CounselingSubmode(StrEnum):
-    """Canonical counseling submodes."""
+class TriageDecision(StrEnum):
+    """Fast triage decisions at runtime step 4."""
 
-    REFLECTION = "reflection"
-    CLARIFYING_QUESTION = "clarifying_question"
-    BODY_AWARENESS = "body_awareness"
-    STORY = "story"
-    RESOURCE_REDIRECT = "resource_redirect"
-    FOLLOWUP_CHECK = "followup_check"
-    NONE = "none"
-
-
-class EmotionTag(StrEnum):
-    """Canonical emotional labels produced by analyzers."""
-
-    CALM = "calm"
-    ANXIOUS = "anxious"
-    STRESSED = "stressed"
-    SAD = "sad"
-    ANGRY = "angry"
-    CONFUSED = "confused"
-    HOPEFUL = "hopeful"
-    OVERWHELMED = "overwhelmed"
-    GRATEFUL = "grateful"
-    NEUTRAL_UNKNOWN = "neutral_unknown"
+    CRISIS_HOTLINE_IMMEDIATE = "crisis_hotline_immediate"
+    BLOCKED_MINOR = "blocked_minor"
+    HARD_REDIRECT = "hard_redirect"
+    POLICY_BYPASS_REFUSAL = "policy_bypass_refusal"
+    SPAM_OR_NON_CONVERSATIONAL = "spam_or_non_conversational"
+    CONTINUE_TO_FULL_REASONING = "continue_to_full_reasoning"
 
 
-class EmotionShift(StrEnum):
-    """Canonical change directions for emotional state."""
+class CaseStatus(StrEnum):
+    """Lifecycle status for backend continuity cases."""
 
-    STABLE = "stable"
-    ESCALATING = "escalating"
-    DE_ESCALATING = "de_escalating"
-    NEW_TOPIC = "new_topic"
-    UNKNOWN = "unknown"
-
-
-class Sensitivity(StrEnum):
-    """Canonical sensitivity tiers for content and data."""
-
-    PUBLIC_SAFE = "public_safe"
-    PRIVATE_SAFE = "private_safe"
-    CLINICAL_SENSITIVE = "clinical_sensitive"
+    ACTIVE = "active"
+    PROGRESSING = "progressing"
+    PAUSED = "paused"
+    RESOLVED = "resolved"
+    INACTIVE = "inactive"
+    STALLED = "stalled"
 
 
-class ConsentState(StrEnum):
-    """Canonical user consent states."""
+class CasePhase(StrEnum):
+    """MVP case phase."""
 
-    NO_CONSENT = "no_consent"
-    CONSENTED_V1 = "consented_v1"
-    RECONSENT_REQUIRED = "reconsent_required"
-    WITHDRAWN_PENDING_DELETE = "withdrawn_pending_delete"
-    DELETED = "deleted"
+    UNDERSTAND = "understand"
+    ILLUMINATE = "illuminate"
+    FOLLOWUP = "followup"
 
 
-class SessionState(StrEnum):
-    """Canonical chat session states."""
+class TurnStatus(StrEnum):
+    """Minimal runtime status for a chat turn."""
 
-    OPENED = "opened"
-    STREAMING = "streaming"
+    RECEIVED = "received"
+    PROCESSING = "processing"
     COMPLETED = "completed"
-    ABANDONED = "abandoned"
-    TIMEOUT_CLOSED = "timeout_closed"
-    VALIDATOR_REJECTED = "validator_rejected"
+    FAILED = "failed"
 
 
-class OutboxDeliveryState(StrEnum):
-    """Canonical outbox delivery lifecycle states."""
+class UsageAccountingStatus(StrEnum):
+    """Usage accounting finalization status for a turn."""
 
     PENDING = "pending"
-    DISPATCHED = "dispatched"
+    FINALIZED = "finalized"
+    PARTIAL = "partial"
     FAILED = "failed"
-    DEAD_LETTER = "dead_letter"
 
 
-class ReadinessLevel(StrEnum):
-    """Canonical readiness levels for change-oriented progress."""
+class Step12FinalizationStatus(StrEnum):
+    """Synchronous post-turn finalization status."""
 
-    NOT_READY = "not_ready"
-    EXPLORING = "exploring"
-    INSIGHT = "insight"
-    SELF_RESOLVING = "self_resolving"
-
-
-class RiskLevel(StrEnum):
-    """Canonical risk levels used across safety-related contracts."""
-
-    NONE = "none"
-    LOW = "low"
-    MODERATE = "moderate"
-    HIGH = "high"
+    PENDING = "pending"
+    PROCESSING = "processing"
+    FINALIZED = "finalized"
+    PARTIAL = "partial"
+    FAILED = "failed"
 
 
-class OutOfScopeType(StrEnum):
-    """Canonical reasons a request is out of scope."""
+class LLMUsageStatus(StrEnum):
+    """Status for one LLM operation usage event."""
 
-    NONE = "none"
-    MEDICATION = "medication"
-    DIAGNOSIS = "diagnosis"
-    TRAUMA = "trauma"
-    SUBSTANCE = "substance"
-    OTHER = "other"
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
 
 
-class Intent(StrEnum):
-    """Canonical intent classes shared by analyzers and rules."""
+class LLMGatewayIntegrationKind(StrEnum):
+    """Canonical integration kinds supported by LLM gateways."""
 
-    RELATED = "RELATED"
-    UNRELATED = "UNRELATED"
-    UNSAFE = "UNSAFE"
-    META_ATTACK = "META_ATTACK"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    OPENAI_EMBEDDINGS_V1 = "openai_embeddings_v1"
+    ANTHROPIC_NATIVE = "anthropic_native"
+    AZURE_OPENAI_V1 = "azure_openai_v1"
+    OPENAI_NATIVE = "openai_native"
+
+
+class LLMGatewayMode(StrEnum):
+    """Canonical message shaping modes for LLM gateways."""
+
+    SINGLE_MESSAGE = "single_message"
+    CONVERSATION = "conversation"
+
+
+class OperationKey(StrEnum):
+    """LLM operation keys required by the MVP runtime."""
+
+    TRIAGE_CLASSIFIER = "triage_classifier"
+    CASE_CLASSIFIER = "case_classifier"
+    FULL_REASONING = "full_reasoning"
+    RESPONSE_GENERATION = "response_generation"
+    RESPONSE_VALIDATION = "response_validation"
+    RETRIEVAL_QUERY_BUILDER = "retrieval_query_builder"
+    RETRIEVAL_QUERY_EMBEDDING = "retrieval_query_embedding"
+    RETRIEVAL_STITCH_VALIDATOR = "retrieval_stitch_validator"
+    CONTEXT_SUMMARY_UPDATER = "context_summary_updater"
+    LONG_TERM_MEMORY_EXTRACTOR = "long_term_memory_extractor"
+
+
+CONVERSATIONAL_RESPONSE_METHODS = {
+    ResponseMethod.LISTEN,
+    ResponseMethod.ASK,
+    ResponseMethod.REFLECT,
+    ResponseMethod.TEACH,
+    ResponseMethod.FOLLOWUP,
+}
+
+CONTROL_RESPONSE_METHODS = {
+    ResponseMethod.REDIRECT,
+    ResponseMethod.CRISIS_SAFE_ONLY,
+    ResponseMethod.BLOCKED_MINOR,
+    ResponseMethod.REFUSAL,
+    ResponseMethod.SPAM_REPLY,
+}

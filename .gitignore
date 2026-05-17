@@ -48,6 +48,8 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+.claude/settings.json
+.claude/settings.local.json
 
 # OS
 .DS_Store
@@ -56,11 +58,17 @@ Thumbs.db
 # Docker
 *.env.docker
 
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
 # mypy
 .mypy_cache/
 .dmypy.json
 dmypy.json
+.ruff_cache/
+
+# Local agent/worklog files
+agent-progress.md
+tech-debt.md
+AGENTS.md
+CLAUDE.md
+
+
+project-spec
