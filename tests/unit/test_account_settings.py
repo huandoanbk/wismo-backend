@@ -41,9 +41,16 @@ def test_get_profile_returns_all_fields() -> None:
     assert profile["display_name"] == user.display_name
     assert profile["email_verified"] is True
     assert "date_joined" in profile
+    assert profile["has_usable_password"] is True
     # ISO 8601 UTC format
     assert profile["date_joined"].endswith("Z")
     assert "T" in profile["date_joined"]
+
+
+def test_get_profile_google_only_has_usable_password_false() -> None:
+    user = User.objects.create_user(email="google-profile@example.com", password=None, email_verified=True)
+    profile = AccountSettingsService().get_profile(user)
+    assert profile["has_usable_password"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +209,36 @@ def test_get_me_authenticated() -> None:
     assert "display_name" in response.data
     assert "email_verified" in response.data
     assert "date_joined" in response.data
+    assert response.data["has_usable_password"] is True
+
+
+def test_get_me_google_only_has_usable_password_false() -> None:
+    user = User.objects.create_user(email="google-me@example.com", password=None, email_verified=True)
+    client = authenticated_client(user)
+
+    response = client.get("/api/accounts/me/")
+
+    assert response.status_code == 200
+    assert response.data["has_usable_password"] is False
+
+
+def test_get_me_google_only_after_add_password_has_usable_password_true() -> None:
+    user = User.objects.create_user(email="google-me-add@example.com", password=None, email_verified=True)
+    client = authenticated_client(user)
+
+    add_response = client.post(
+        "/api/accounts/add-password/",
+        {"new_password": "NewPass-Secure-2026!"},
+        format="json",
+    )
+    assert add_response.status_code == 200
+
+    # Session auth hash changes after password set; re-login for profile fetch.
+    user.refresh_from_db()
+    client.force_login(user)
+    me_response = client.get("/api/accounts/me/")
+    assert me_response.status_code == 200
+    assert me_response.data["has_usable_password"] is True
 
 
 def test_get_me_unauthenticated() -> None:

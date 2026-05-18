@@ -558,6 +558,7 @@ class AccountSettingsService:
             "display_name": user.display_name,
             "email_verified": user.email_verified,
             "date_joined": user.date_joined.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "has_usable_password": user.has_usable_password(),
         }
 
     def update_display_name(self, user: User, display_name: str) -> dict:
