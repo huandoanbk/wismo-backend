@@ -70,16 +70,14 @@ def test_step7_calls_full_reasoning_with_runtime_bundle_payload() -> None:
         [
             json.dumps(
                 {
-                    "risk_flags": ["none"],
                     "intent": "unclear",
                     "action_recommended": "ASK",
-                    "is_context_sufficient": False,
                     "required_next_slots": ["core_problem"],
                     "case_slots": {"core_problem": "x"},
                     "turn_strategy": {"focus": "f", "angle": "a", "avoid": []},
-                    "explicit_profile_facts": [],
-                    "style_signals": ["none"],
-                    "user_state_signals": ["none"],
+                    "explicit_profile_facts_next": [],
+                    "style_signals_next": ["none"],
+                    "user_state_signals_next": ["none"],
                     "suggested_chat_display_name": None,
                 }
             )
@@ -97,12 +95,10 @@ def test_step7_calls_full_reasoning_with_runtime_bundle_payload() -> None:
     assert payload["runtime_bundle"]["recent_turns"][0]["user_message_text"] == "u1"
     system_prompt = gateway.calls[0]["prompt_messages"][0]["content"]
     assert "action_recommended must be exactly one of: LISTEN, ASK, REFLECT, FOLLOWUP, TEACH." in system_prompt
-    assert "Choose LISTEN when user mainly needs emotional holding/validation in this turn." in system_prompt
-    assert "Choose ASK when context is insufficient or key slots are missing and 1-2 focused questions are needed." in system_prompt
-    assert "Choose REFLECT when context is sufficient and user needs self-understanding" in system_prompt
-    assert "Choose FOLLOWUP when user is continuing an existing thread/progress update" in system_prompt
-    assert "Choose TEACH when user is asking for perspective" in system_prompt
-    assert "do NOT choose ASK" in system_prompt
+    assert "turn_strategy definition" in system_prompt
+    assert "style_signals_next are updated response-style preferences" in system_prompt
+    assert "user_state_signals_next are updated emotional/mental-state signals" in system_prompt
+    assert "explicit_profile_facts_next are cumulative factual profile facts" in system_prompt
 
 
 def test_step7_includes_reasoning_control_on_corrective_retry() -> None:
@@ -116,7 +112,7 @@ def test_step7_includes_reasoning_control_on_corrective_retry() -> None:
             "error_type": "schema_fail_heavy",
             "error_codes": ["missing_required_field"],
             "must_fix_fields": ["intent"],
-            "must_preserve": ["risk_flags"],
+            "must_preserve": ["action_recommended"],
         },
     }
 
@@ -125,6 +121,34 @@ def test_step7_includes_reasoning_control_on_corrective_retry() -> None:
     payload = json.loads(gateway.calls[0]["prompt_messages"][1]["content"])
     assert payload["reasoning_control"]["is_corrective_retry"] is True
     assert payload["reasoning_control"]["retry_count"] == 1
+
+
+def test_step7_turn2_payload_includes_current_chat_display_name_for_renaming_decision() -> None:
+    orchestrator = RuntimeOrchestrator(llm_gateway=StubGateway(["{}"]))
+    state = _build_state()
+    state.chat.chat_display_name = "Tên hiện tại"
+    state.chat.save(update_fields=["chat_display_name"])
+    state.needs_chat_display_name_suggestion = True
+    state.chat_turn_number = 2
+
+    prompt_messages = orchestrator._build_reasoning_prompt(state)
+    payload = json.loads(prompt_messages[1]["content"])
+
+    assert payload["chat_display_name_suggestion_context"]["chat_turn_number"] == 2
+    assert payload["chat_display_name_suggestion_context"]["current_chat_display_name"] == "Tên hiện tại"
+
+
+def test_step7_turn1_payload_does_not_include_current_chat_display_name() -> None:
+    orchestrator = RuntimeOrchestrator(llm_gateway=StubGateway(["{}"]))
+    state = _build_state()
+    state.needs_chat_display_name_suggestion = True
+    state.chat_turn_number = 1
+
+    prompt_messages = orchestrator._build_reasoning_prompt(state)
+    payload = json.loads(prompt_messages[1]["content"])
+
+    assert payload["chat_display_name_suggestion_context"]["chat_turn_number"] == 1
+    assert "current_chat_display_name" not in payload["chat_display_name_suggestion_context"]
 
 
 def test_step7_retries_gateway_provider_errors_up_to_two_times() -> None:
@@ -154,7 +178,7 @@ def test_step7_invalid_schema_falls_back_to_canonical_reasoning_result() -> None
     result = state.reasoning_result
     assert result["intent"] == "unclear"
     assert result["action_recommended"] == "ASK"
-    assert result["risk_flags"] == ["none"]
+    assert result["style_signals_next"] == ["none"]
     assert set(result["case_slots"].keys()) == {
         "core_problem",
         "who_involved",
@@ -171,16 +195,14 @@ def test_step7_control_action_from_llm_is_normalized_to_ask() -> None:
         [
             json.dumps(
                 {
-                    "risk_flags": ["none"],
                     "intent": "continue_previous_topic",
                     "action_recommended": "REDIRECT",
-                    "is_context_sufficient": True,
                     "required_next_slots": [],
                     "case_slots": {"core_problem": "too much work", "goal": "finish thesis"},
                     "turn_strategy": {"focus": "f", "angle": "a", "avoid": []},
-                    "explicit_profile_facts": [],
-                    "style_signals": ["none"],
-                    "user_state_signals": ["none"],
+                    "explicit_profile_facts_next": [],
+                    "style_signals_next": ["none"],
+                    "user_state_signals_next": ["none"],
                     "suggested_chat_display_name": None,
                 }
             )

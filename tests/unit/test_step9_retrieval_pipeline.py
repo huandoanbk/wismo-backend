@@ -51,7 +51,6 @@ def _state_for_step9() -> RuntimeState:
         },
         response_method=ResponseMethod.ASK,
         retrieval_required=False,
-        final_safety_state="normal",
     )
 
 
@@ -186,6 +185,60 @@ def test_retrieval_service_reranker_failure_fallback_prerank() -> None:
     assert "fused_top_k" not in outcome.retrieval_debug_meta
 
 
+def test_retrieval_service_reranks_with_all_retrieval_queries() -> None:
+    gateway = DummyGateway([json.dumps({"retrieval_queries": ["q1", "q2"]})])
+    embedding = SimpleNamespace(embed_query=lambda query, turn: ([1.0, 0.0], {"query_embedding_model": "local"}))
+
+    class CaptureReranker:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def rerank(self, *, query, candidates):  # noqa: ANN001
+            self.queries.append(query)
+            return [str(item["chunk_id"]) for item in candidates]
+
+    reranker = CaptureReranker()
+    service = KnowledgeRetrievalService(
+        llm_gateway=gateway,
+        embedding_service=embedding,
+        reranker_client=reranker,
+    )
+
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="T",
+        speaker_or_author="A",
+        source_type="talk",
+    )
+    chunk = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_document=source,
+        source_document_id=source.id,
+        segment_index=1,
+        content_text="chunk-text",
+        content_type="story",
+        topic="x",
+        dharma_concepts=["mind"],
+    )
+
+    service._load_candidates = lambda query_vector: [{"chunk": chunk, "score": 0.8}]  # type: ignore[assignment]
+    service._apply_stitch_with_validator = lambda state, primary_chunk: ([primary_chunk], "KEEP", 0)  # type: ignore[assignment]
+
+    state = SimpleNamespace(
+        turn=SimpleNamespace(id="t"),
+        runtime_bundle={"current_message": "hello", "context_summary": "sum"},
+        normalized_reasoning_result={"intent": "unclear", "case_slots": {}, "required_next_slots": [], "turn_strategy": {}},
+    )
+
+    outcome = service.run(state=state)
+
+    assert outcome.retrieval_result is not None
+    assert reranker.queries == ["q1", "q2"]
+    assert outcome.retrieval_debug_meta["retrieval_queries"] == ["q1", "q2"]
+    assert outcome.retrieval_debug_meta["merged_candidate_count"] == 1
+    assert outcome.retrieval_result["rerank_score"] == 1.25
+
+
 def test_retrieval_service_query_builder_uses_operation_registry() -> None:
     gateway = DummyGateway([json.dumps({"retrieval_query": "q"})])
     service = KnowledgeRetrievalService(
@@ -205,9 +258,9 @@ def test_retrieval_service_query_builder_uses_operation_registry() -> None:
         },
     )
 
-    value, meta = service._build_retrieval_query(state=state)
+    value, meta = service._build_retrieval_queries(state=state)
 
-    assert value == "q"
+    assert value == ["q"]
     assert meta["query_builder_failed"] is False
     assert gateway.calls[0]["operation_key"] == OperationKey.RETRIEVAL_QUERY_BUILDER
 
@@ -225,7 +278,68 @@ def test_retrieval_service_query_builder_fallback_marks_error() -> None:
         normalized_reasoning_result={},
     )
 
-    value, meta = service._build_retrieval_query(state=state)
+    value, meta = service._build_retrieval_queries(state=state)
 
-    assert value == "retrieval_no_match_fallback"
+    assert value == ["retrieval_no_match_fallback"]
     assert meta["query_builder_failed"] is True
+
+
+def test_retrieval_service_query_builder_accepts_multi_queries() -> None:
+    gateway = DummyGateway([json.dumps({"retrieval_queries": ["q1", "q2", "q3", "q4"]})])
+    service = KnowledgeRetrievalService(
+        llm_gateway=gateway,
+        embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+    )
+    state = SimpleNamespace(
+        turn=SimpleNamespace(id="t"),
+        runtime_bundle={"current_message": "hello", "context_summary": "sum"},
+        normalized_reasoning_result={},
+    )
+
+    value, meta = service._build_retrieval_queries(state=state)
+
+    assert value == ["q1", "q2", "q3"]
+    assert meta["query_builder_failed"] is False
+
+
+def test_retrieval_stitch_validator_prompt_has_clear_policy() -> None:
+    gateway = DummyGateway([json.dumps({"decision": "KEEP"})])
+    service = KnowledgeRetrievalService(
+        llm_gateway=gateway,
+        embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+    )
+
+    source_id = uuid.uuid4()
+    primary = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_document_id=source_id,
+        segment_index=5,
+        content_type="teaching_point",
+        content_text="primary",
+    )
+    prev = SimpleNamespace(
+        id=uuid.uuid4(),
+        segment_index=4,
+        content_text="prev",
+    )
+    next_chunk = SimpleNamespace(
+        id=uuid.uuid4(),
+        segment_index=6,
+        content_text="next",
+    )
+
+    decision = service._stitch_decision(
+        state=SimpleNamespace(turn=SimpleNamespace(id="t")),
+        primary_chunk=primary,
+        prev_chunk=prev,
+        next_chunk=next_chunk,
+    )
+
+    assert decision == "KEEP"
+    assert gateway.calls[0]["operation_key"] == OperationKey.RETRIEVAL_STITCH_VALIDATOR
+    system_prompt = gateway.calls[0]["prompt_messages"][0]["content"]
+    assert "default to KEEP" in system_prompt
+    assert "if prev is null" in system_prompt
+    assert "if next is null" in system_prompt

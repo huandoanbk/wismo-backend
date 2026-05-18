@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +27,18 @@ class FakeGateway:
         if isinstance(result, Exception):
             raise result
         return SimpleNamespace(text=result)
+
+
+class CaptureGateway(FakeGateway):
+    """Fake gateway that captures the latest prompt messages for assertions."""
+
+    def __init__(self, mapping: dict[str, str | Exception]) -> None:
+        super().__init__(mapping)
+        self.last_prompt_messages: list[dict[str, str]] = []
+
+    def complete(self, *, operation_key, turn, prompt_messages):  # noqa: ANN001
+        self.last_prompt_messages = prompt_messages
+        return super().complete(operation_key=operation_key, turn=turn, prompt_messages=prompt_messages)
 
 
 def _create_identity_and_chat() -> tuple[IdentityContext, Chat, ChatTurn]:
@@ -75,6 +88,24 @@ def test_resolve_case_uses_classifier_match_for_existing_cases() -> None:
     assert result.status == "resolved"
     assert result.source == "case_classifier_match"
     assert chat.case_id == old_case.id
+
+
+def test_case_classifier_uses_current_turn_message_not_opening_text() -> None:
+    identity, chat, turn = _create_identity_and_chat()
+    Case.objects.create(guest_identity=identity.guest_identity, topic="old", context_summary="a")
+    gateway = CaptureGateway({"case_classifier": '{"decision":"ambiguous"}'})
+
+    CaseResolutionService(llm_gateway=gateway).resolve(
+        identity=identity,
+        chat=chat,
+        message="follow-up message",
+        turn=turn,
+    )
+
+    assert len(gateway.last_prompt_messages) == 2
+    payload = json.loads(gateway.last_prompt_messages[1]["content"])
+    assert payload["current_message"] == "follow-up message"
+    assert payload["current_message"] != chat.opening_input_text
 
 
 def test_classifier_match_falls_back_to_recency_when_matched_case_id_invalid() -> None:

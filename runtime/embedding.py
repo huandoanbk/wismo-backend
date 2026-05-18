@@ -10,6 +10,7 @@ import requests
 
 from llm_ops.errors import LLMGatewayError
 from llm_ops.gateway import LLMGateway
+from runtime.prompts import RETRIEVAL_QUERY_EMBEDDING_SYSTEM
 from wismo.contracts.enums import OperationKey
 
 
@@ -59,7 +60,7 @@ class EmbeddingService:
             prompt_messages=[
                 {
                     "role": "system",
-                    "content": "Return JSON only: {\"embedding\": [float,...]}",
+                    "content": RETRIEVAL_QUERY_EMBEDDING_SYSTEM,
                 },
                 {
                     "role": "user",

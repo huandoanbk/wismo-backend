@@ -59,7 +59,7 @@ def test_triage_llm_json_with_low_confidence_control_downgrades_to_continue() ->
         _JsonGateway(
             text=(
                 '{"triage_decision":"hard_redirect","confidence":"low",'
-                '"reason_tags":["uncertain_scope"],"matched_span":"need legal help"}'
+                '"short_reason":"uncertain_scope"}'
             )
         )
     )
@@ -71,7 +71,7 @@ def test_triage_llm_json_with_low_confidence_control_downgrades_to_continue() ->
 
     assert result.decision == TriageDecision.CONTINUE_TO_FULL_REASONING
     assert result.source == "fallback"
-    assert "llm_low_confidence_control_override" in result.reason_tags
+    assert result.short_reason == "llm_low_confidence_control_override"
 
 
 def test_triage_llm_json_high_confidence_control_kept() -> None:
@@ -79,7 +79,7 @@ def test_triage_llm_json_high_confidence_control_kept() -> None:
         _JsonGateway(
             text=(
                 '{"triage_decision":"hard_redirect","confidence":"high",'
-                '"reason_tags":["medical_diagnosis_request"],"matched_span":"diagnose my disease"}'
+                '"short_reason":"medical_diagnosis_request"}'
             )
         )
     )
@@ -92,6 +92,7 @@ def test_triage_llm_json_high_confidence_control_kept() -> None:
     assert result.decision == TriageDecision.HARD_REDIRECT
     assert result.source == "llm"
     assert result.confidence == "high"
+    assert result.short_reason == "medical_diagnosis_request"
 
 
 def test_triage_llm_malformed_json_falls_back_to_continue() -> None:
@@ -108,7 +109,7 @@ def test_triage_llm_malformed_json_falls_back_to_continue() -> None:
 
 def test_triage_llm_fallback_prompt_includes_recent_turns_for_disambiguation() -> None:
     gateway = _CaptureGateway(
-        text='{"triage_decision":"continue_to_full_reasoning","confidence":"high","reason_tags":["default"]}'
+        text='{"triage_decision":"continue_to_full_reasoning","confidence":"high","short_reason":""}'
     )
     service = FastTriageService(gateway)
 
@@ -141,7 +142,7 @@ def test_rule_based_general_out_of_scope_request_redirects() -> None:
     assert result is not None
     assert result.decision == TriageDecision.HARD_REDIRECT
     assert result.source == "rule"
-    assert "out_of_scope_general_request" in result.reason_tags
+    assert result.short_reason == "out_of_scope_general_request"
 
 
 def test_rule_based_emotional_support_stays_non_redirect() -> None:

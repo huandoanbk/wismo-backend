@@ -55,10 +55,8 @@ def _state_with_reasoning(reasoning_result: dict) -> RuntimeState:
 
 def _base_reasoning(**overrides) -> dict:
     data = {
-        "risk_flags": ["none"],
         "intent": "emotional_support",
         "action_recommended": "LISTEN",
-        "is_context_sufficient": True,
         "required_next_slots": [],
         "case_slots": {
             "core_problem": "stress",
@@ -70,9 +68,9 @@ def _base_reasoning(**overrides) -> dict:
             "desired_outcome": "calm",
         },
         "turn_strategy": {"focus": "empathy", "angle": "gentle", "avoid": "advice"},
-        "explicit_profile_facts": [],
-        "style_signals": ["none"],
-        "user_state_signals": ["none"],
+        "explicit_profile_facts_next": [],
+        "style_signals_next": ["none"],
+        "user_state_signals_next": ["none"],
         "suggested_chat_display_name": None,
     }
     data.update(overrides)
@@ -155,6 +153,47 @@ def test_step6_recent_turns_ordered_old_to_new() -> None:
 #  STEP 7 — non-transient LLM error raises immediately
 # ══════════════════════════════════════════════════════════════════
 
+
+@pytest.mark.parametrize(
+    ("existing_turn_count", "expected_turn_number", "expected_suggestion_enabled"),
+    [
+        (0, 1, True),
+        (1, 2, True),
+        (2, 3, True),
+        (3, 4, False),
+    ],
+)
+def test_step3_create_turn_enables_chat_name_suggestion_for_first_three_turns(
+    existing_turn_count: int,
+    expected_turn_number: int,
+    expected_suggestion_enabled: bool,
+) -> None:
+    """Step 3 enables chat title suggestion only for turn 1-3."""
+
+    guest = GuestIdentity.objects.create()
+    identity = IdentityContext(guest_identity=guest)
+    chat = Chat.objects.create(guest_identity=guest, opening_input_text="open")
+    for index in range(existing_turn_count):
+        ChatTurn.objects.create(
+            guest_identity=guest,
+            chat=chat,
+            user_message_text=f"old-{index}",
+            status=TurnStatus.COMPLETED.value,
+            assistant_response_text="done",
+        )
+
+    state = RuntimeState(
+        request_payload=SimpleNamespace(message="hello"),
+        identity=identity,
+        quota_window=SimpleNamespace(),
+        chat=chat,
+    )
+
+    RuntimeOrchestrator()._create_turn(state)
+
+    assert state.chat_turn_number == expected_turn_number
+    assert state.needs_chat_display_name_suggestion is expected_suggestion_enabled
+
 def test_step7_non_transient_error_raises_without_retry() -> None:
     """E.2: non-transient gateway error propagates immediately, no retry."""
     from llm_ops.errors import LLM_GATEWAY_CONFIG_MISSING
@@ -185,12 +224,11 @@ def test_step7_non_transient_error_raises_without_retry() -> None:
     assert call_count == 1
 
 
-def test_step8_applies_suggested_chat_display_name_for_first_turn() -> None:
-    """Step 8 applies suggested chat title only when first-turn suggestion is enabled."""
+def test_step8_applies_suggested_chat_display_name_when_suggestion_window_enabled() -> None:
+    """Step 8 applies suggested chat title when the turn is inside suggestion window."""
 
     state = _state_with_reasoning(_base_reasoning(
         action_recommended="LISTEN",
-        is_context_sufficient=True,
         required_next_slots=[],
         suggested_chat_display_name="Áp lực luận văn",
     ))
@@ -211,7 +249,6 @@ def test_step8_non_ask_action_clears_required_next_slots() -> None:
     state = _state_with_reasoning(_base_reasoning(
         intent="emotional_support",
         action_recommended="LISTEN",
-        is_context_sufficient=True,
         required_next_slots=["core_problem", "goal"],
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)
@@ -224,7 +261,6 @@ def test_step8_required_slots_outside_allowlist_filtered() -> None:
     state = _state_with_reasoning(_base_reasoning(
         intent="emotional_support",
         action_recommended="ASK",
-        is_context_sufficient=False,
         required_next_slots=["core_problem", "invalid_slot_xyz"],
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)
@@ -242,7 +278,6 @@ def test_step8_fulfilled_slots_removed_from_required() -> None:
     state = _state_with_reasoning(_base_reasoning(
         intent="emotional_support",
         action_recommended="ASK",
-        is_context_sufficient=False,
         required_next_slots=["core_problem", "goal"],
         case_slots={
             "core_problem": "anxiety at work",  # already filled
@@ -267,10 +302,10 @@ def test_step8_fulfilled_slots_removed_from_required() -> None:
 def test_step8_style_signals_outside_allowlist_filtered() -> None:
     """G: style_signals outside allowlist → dropped, default [none]."""
     state = _state_with_reasoning(_base_reasoning(
-        style_signals=["prefers_gentle_tone", "unknown_style_signal"],
+        style_signals_next=["prefers_gentle_tone", "unknown_style_signal"],
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)
-    signals = state.normalized_reasoning_result["style_signals"]
+    signals = state.normalized_reasoning_result["style_signals_next"]
     assert "unknown_style_signal" not in signals
     assert "prefers_gentle_tone" in signals
 
@@ -278,26 +313,12 @@ def test_step8_style_signals_outside_allowlist_filtered() -> None:
 def test_step8_user_state_signals_outside_allowlist_filtered() -> None:
     """G: user_state_signals outside allowlist → dropped."""
     state = _state_with_reasoning(_base_reasoning(
-        user_state_signals=["stable_enough", "GARBAGE_VALUE"],
+        user_state_signals_next=["stable_enough", "GARBAGE_VALUE"],
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)
-    signals = state.normalized_reasoning_result["user_state_signals"]
+    signals = state.normalized_reasoning_result["user_state_signals_next"]
     assert "GARBAGE_VALUE" not in signals
     assert "stable_enough" in signals
-
-
-# ══════════════════════════════════════════════════════════════════
-#  STEP 8 — 8.2: dedup risk_flags
-# ══════════════════════════════════════════════════════════════════
-
-def test_step8_duplicate_risk_flags_deduped() -> None:
-    """8.2: duplicate values in risk_flags are removed."""
-    state = _state_with_reasoning(_base_reasoning(
-        risk_flags=["none", "none", "none"],
-    ))
-    RuntimeOrchestrator()._validate_and_select_response_method(state)
-    flags = state.normalized_reasoning_result["risk_flags"]
-    assert flags.count("none") == 1
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -309,7 +330,6 @@ def test_step8_listen_maps_to_listen() -> None:
     state = _state_with_reasoning(_base_reasoning(
         action_recommended="LISTEN",
         intent="emotional_support",
-        is_context_sufficient=True,
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)
     assert state.response_method == ResponseMethod.LISTEN
@@ -320,7 +340,6 @@ def test_step8_reflect_maps_to_reflect() -> None:
     state = _state_with_reasoning(_base_reasoning(
         action_recommended="REFLECT",
         intent="self_understanding",
-        is_context_sufficient=True,
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)
     assert state.response_method == ResponseMethod.REFLECT
@@ -331,7 +350,6 @@ def test_step8_followup_maps_to_followup() -> None:
     state = _state_with_reasoning(_base_reasoning(
         action_recommended="FOLLOWUP",
         intent="continue_previous_topic",
-        is_context_sufficient=True,
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)
     assert state.response_method == ResponseMethod.FOLLOWUP
@@ -342,7 +360,6 @@ def test_step8_ask_maps_to_ask() -> None:
     state = _state_with_reasoning(_base_reasoning(
         action_recommended="ASK",
         intent="emotional_support",
-        is_context_sufficient=False,
         required_next_slots=["core_problem"],
     ))
     RuntimeOrchestrator()._validate_and_select_response_method(state)

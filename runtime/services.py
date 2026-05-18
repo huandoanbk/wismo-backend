@@ -59,6 +59,13 @@ class AdminContactPolicy:
     email: str
 
 
+@dataclass(frozen=True)
+class PromptAssemblyPolicy:
+    """Admin-controlled prompt assembly compaction threshold."""
+
+    max_estimated_tokens: int
+
+
 class RuntimeConfigService:
     """Read admin-controlled runtime configuration with deterministic defaults."""
 
@@ -69,11 +76,13 @@ class RuntimeConfigService:
     STEP_TRACE_KEY = "runtime.step_trace"
     GUEST_SESSION_KEY = "guest.session_policy"
     ADMIN_CONTACT_KEY = "admin.contact_email"
+    PROMPT_ASSEMBLY_KEY = "runtime.prompt_assembly"
 
     DEFAULT_INPUT_LIMITS = RuntimeInputLimits(max_message_length_chars=8000, max_payload_bytes=65536)
     DEFAULT_GUEST_QUOTA_POLICY = QuotaPolicy(token_limit=100000, window_seconds=86400)
     DEFAULT_USER_QUOTA_POLICY = QuotaPolicy(token_limit=1000000, window_seconds=86400)
     DEFAULT_PENDING_INPUT_LIMITS = PendingInputLimits(max_appends=10, max_chars=12000)
+    DEFAULT_PROMPT_ASSEMBLY_POLICY = PromptAssemblyPolicy(max_estimated_tokens=3500)
     DEFAULT_STEP_TRACE = StepTraceConfig(level="off")
     DEFAULT_GUEST_SESSION_POLICY = GuestSessionPolicy(idle_ttl_hours=6)
     DEFAULT_ADMIN_CONTACT_POLICY = AdminContactPolicy(email="")
@@ -127,6 +136,13 @@ class RuntimeConfigService:
 
         return self._parse_admin_contact_policy(
             self._load_value(self.ADMIN_CONTACT_KEY, self.DEFAULT_ADMIN_CONTACT_POLICY),
+        )
+
+    def prompt_assembly_policy(self) -> PromptAssemblyPolicy:
+        """Return admin-controlled prompt assembly compaction threshold."""
+
+        return self._parse_prompt_assembly_policy(
+            self._load_value(self.PROMPT_ASSEMBLY_KEY, self.DEFAULT_PROMPT_ASSEMBLY_POLICY),
         )
 
     def step_trace_level(self) -> str:
@@ -228,6 +244,17 @@ class RuntimeConfigService:
             idle_ttl_hours=self._parse_int(
                 value.get("idle_ttl_hours", default.idle_ttl_hours),
                 default.idle_ttl_hours,
+            ),
+        )
+
+    def _parse_prompt_assembly_policy(self, value: dict[str, Any]) -> PromptAssemblyPolicy:
+        """Coerce prompt assembly policy mapping into a typed config object."""
+
+        default = self.DEFAULT_PROMPT_ASSEMBLY_POLICY
+        return PromptAssemblyPolicy(
+            max_estimated_tokens=self._parse_int(
+                value.get("max_estimated_tokens", default.max_estimated_tokens),
+                default.max_estimated_tokens,
             ),
         )
 
@@ -536,23 +563,31 @@ class RuntimeBundleService:
         return rows
 
     def _long_term_memory(self, *, case, identity) -> list[dict[str, Any]]:
-        """Load case-scoped active memory items with fail-safe fallback."""
+        """Load case-scoped long-term timeline segments with fail-safe fallback."""
 
         if case is None:
             return []
         try:
             queryset = (
-                MemoryItem.objects.filter(case=case, is_active=True, **identity.owner_kwargs())
-                .order_by("-updated_at", "-created_at", "-id")
-                .values("id", "memory_type", "normalized_text", "confidence", "evidence_count")
+                MemoryItem.objects.filter(case=case, **identity.owner_kwargs())
+                .order_by("updated_at", "id")
+                .values(
+                    "user_concern_summary",
+                    "assistant_approach_summary",
+                    "user_response_summary",
+                    "state_shift",
+                    "open_loops",
+                    "updated_at",
+                )
             )
             return [
                 {
-                    "memory_id": str(item["id"]),
-                    "memory_type": item["memory_type"],
-                    "text": item["normalized_text"],
-                    "confidence": item["confidence"],
-                    "evidence_count": item["evidence_count"],
+                    "user_concern_summary": item["user_concern_summary"] or "",
+                    "assistant_approach_summary": item["assistant_approach_summary"] or "",
+                    "user_response_summary": item["user_response_summary"] or "",
+                    "state_shift": item["state_shift"] or "",
+                    "open_loops": item["open_loops"] if isinstance(item["open_loops"], list) else [],
+                    "updated_at": item["updated_at"].isoformat() if item.get("updated_at") else "",
                 }
                 for item in queryset
             ]

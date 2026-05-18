@@ -10,6 +10,7 @@ from accounts.models import GuestIdentity
 from chat.models import Chat, ChatTurn
 from chat.services import IdentityContext
 from runtime.orchestrator import RuntimeOrchestrator, RuntimeState
+from runtime.services import IdentityStateStoreService
 from wismo.contracts.enums import ResponseMethod
 
 pytestmark = pytest.mark.django_db
@@ -42,10 +43,8 @@ def _state_with_reasoning(reasoning_result: dict) -> RuntimeState:
 
 def _base_reasoning(**overrides):
     data = {
-        "risk_flags": ["none"],
         "intent": "unclear",
         "action_recommended": "ASK",
-        "is_context_sufficient": False,
         "required_next_slots": ["core_problem"],
         "case_slots": {
             "core_problem": "",
@@ -57,32 +56,21 @@ def _base_reasoning(**overrides):
             "desired_outcome": "",
         },
         "turn_strategy": {"focus": "", "angle": "", "avoid": []},
-        "explicit_profile_facts": [],
-        "style_signals": ["none"],
-        "user_state_signals": ["none"],
+        "explicit_profile_facts_next": [],
+        "style_signals_next": ["none"],
+        "user_state_signals_next": ["none"],
         "suggested_chat_display_name": None,
     }
     data.update(overrides)
     return data
 
 
-@pytest.mark.parametrize(
-    ("risk_flags", "expected_method", "expected_state"),
-    [
-        (["crisis_self_harm"], ResponseMethod.CRISIS_SAFE_ONLY, "crisis_only"),
-        (["minor_age_block"], ResponseMethod.BLOCKED_MINOR, "blocked"),
-        (["medical_out_of_scope"], ResponseMethod.REDIRECT, "redirect"),
-        (["policy_bypass"], ResponseMethod.REFUSAL, "refusal"),
-        (["spam_or_nonsense"], ResponseMethod.SPAM_REPLY, "spam"),
-    ],
-)
-def test_step8_hard_safety_overrides(risk_flags, expected_method, expected_state) -> None:
-    state = _state_with_reasoning(_base_reasoning(risk_flags=risk_flags, action_recommended="LISTEN"))
+def test_step8_does_not_apply_hard_safety_override_from_reasoning_payload() -> None:
+    state = _state_with_reasoning(_base_reasoning(action_recommended="LISTEN"))
 
     RuntimeOrchestrator()._validate_and_select_response_method(state)
 
-    assert state.response_method == expected_method
-    assert state.final_safety_state == expected_state
+    assert state.response_method == ResponseMethod.LISTEN
     assert state.retrieval_required is False
 
 
@@ -91,7 +79,6 @@ def test_step8_sets_retrieval_required_only_for_teach() -> None:
         _base_reasoning(
             intent="ask_teaching_or_perspective",
             action_recommended="TEACH",
-            is_context_sufficient=True,
             required_next_slots=[],
             case_slots={
                 "core_problem": "x",
@@ -150,7 +137,6 @@ def test_step8_corrective_retry_exhausted_falls_back_to_safe_ask() -> None:
     assert state.reasoning_corrective_retry_count == 2
     assert state.response_method == ResponseMethod.ASK
     assert state.retrieval_required is False
-    assert state.final_safety_state == "normal"
 
 
 def test_step8_corrective_retry_budget_independent_from_gateway_retry_budget() -> None:
@@ -238,11 +224,31 @@ def test_step8_turn_strategy_bad_shape_is_normalized_without_corrective_retry() 
     assert state.normalized_reasoning_result["turn_strategy"] == {"focus": "", "angle": "", "avoid": []}
 
 
-def test_step8_hard_safety_override_precedes_schema_heavy_retry() -> None:
-    state = _state_with_reasoning({"risk_flags": ["crisis_self_harm"]})
+def test_step8_no_schema_retry_when_reasoning_payload_is_complete() -> None:
+    state = _state_with_reasoning(_base_reasoning(action_recommended="LISTEN", required_next_slots=[]))
     orchestrator = RuntimeOrchestrator()
 
     orchestrator._validate_and_select_response_method(state)
 
-    assert state.response_method == ResponseMethod.CRISIS_SAFE_ONLY
+    assert state.response_method == ResponseMethod.LISTEN
     assert state.reasoning_corrective_retry_count == 0
+
+
+def test_step8_persists_next_identity_signals_after_validation() -> None:
+    state = _state_with_reasoning(
+        _base_reasoning(
+            action_recommended="LISTEN",
+            required_next_slots=[],
+            explicit_profile_facts_next=["works remotely"],
+            style_signals_next=["prefers_brief_response"],
+            user_state_signals_next=["overwhelmed"],
+        )
+    )
+
+    RuntimeOrchestrator()._validate_and_select_response_method(state)
+
+    profile, preference, user_state = IdentityStateStoreService().read_bundle_fields(identity=state.identity)
+    assert state.runtime_bundle["identity_state_persisted_in_step8"] is True
+    assert profile.get("facts") == ["works remotely"]
+    assert preference.get("prefers_brief_response") in {True, None}
+    assert user_state.get("primary_state") == "overwhelmed"

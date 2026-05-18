@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,16 +45,6 @@ MAX_REASONING_CORRECTIVE_RETRIES = 2
 TRANSIENT_REASONING_ERROR_CODES = {
     LLM_GATEWAY_PROVIDER_ERROR,
     LLM_GATEWAY_PROVIDER_UNAVAILABLE,
-}
-RISK_FLAG_VALUES = {
-    "crisis_self_harm",
-    "crisis_harm_others",
-    "minor_age_block",
-    "medical_out_of_scope",
-    "legal_out_of_scope",
-    "policy_bypass",
-    "spam_or_nonsense",
-    "none",
 }
 INTENT_VALUES = {
     "emotional_support",
@@ -121,7 +112,6 @@ class RuntimeState:
     request_payload: object
     identity: object
     quota_window: object
-    clear_guest_cookie: bool = False
     chat: object | None = None
     case: object | None = None
     turn: ChatTurn | None = None
@@ -137,11 +127,12 @@ class RuntimeState:
     reasoning_gateway_retry_count: int = 0
     reasoning_corrective_retry_count: int = 0
     normalized_reasoning_result: dict[str, Any] = field(default_factory=dict)
-    final_safety_state: str = "normal"
     retrieval_required: bool = False
     needs_chat_display_name_suggestion: bool = False
+    chat_turn_number: int = 0
     step_trace_level: str = STEP_TRACE_LEVEL_OFF
     step_traces: list[dict[str, Any]] = field(default_factory=list)
+    llm_step_calls: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 class RuntimeOrchestrator:
@@ -157,6 +148,7 @@ class RuntimeOrchestrator:
         self.config_service = RuntimeConfigService()
         self.quota_service = QuotaService()
         self.bundle_service = RuntimeBundleService()
+        self.identity_state_store = self.bundle_service.state_store
         self.embedding_service = EmbeddingService(self.llm_gateway)
         self.reranker_client = RerankerClient()
         self.prompt_assembly_service = PromptAssemblyService()
@@ -182,7 +174,6 @@ class RuntimeOrchestrator:
             request_payload=gate_result.payload,
             identity=gate_result.identity,
             quota_window=gate_result.quota_window,
-            clear_guest_cookie=gate_result.clear_guest_cookie,
         )
         self._resolve_step_trace_level(state)
 
@@ -272,7 +263,8 @@ class RuntimeOrchestrator:
                 output_builder=lambda _result: {
                     "intent": state.reasoning_result.get("intent"),
                     "action_recommended": state.reasoning_result.get("action_recommended"),
-                    "risk_flags": state.reasoning_result.get("risk_flags", []),
+                    "style_signals_next": state.reasoning_result.get("style_signals_next", []),
+                    "user_state_signals_next": state.reasoning_result.get("user_state_signals_next", []),
                 },
             )
             self._run_traced_step(
@@ -281,7 +273,6 @@ class RuntimeOrchestrator:
                 runner=lambda: self._validate_and_select_response_method(state),
                 output_builder=lambda _result: {
                     "response_method": state.response_method.value,
-                    "final_safety_state": state.final_safety_state,
                     "retrieval_required": state.retrieval_required,
                 },
             )
@@ -451,11 +442,10 @@ class RuntimeOrchestrator:
     def _create_turn(self, state: RuntimeState) -> None:
         """Step 3 intake: persist turn anchor right after chat context resolution."""
 
-        # Mark first-turn chat naming path before inserting the current turn.
-        state.needs_chat_display_name_suggestion = not state.chat.turns.exists()
-        state.runtime_bundle["needs_chat_display_name_suggestion"] = (
-            state.needs_chat_display_name_suggestion
-        )
+        existing_turn_count = state.chat.turns.count()
+        state.chat_turn_number = existing_turn_count + 1
+        # Allow title suggestion in the first three turns so the chat name can be refined.
+        state.needs_chat_display_name_suggestion = state.chat_turn_number <= 3
 
         state.turn = ChatTurn.objects.create(
             **state.identity.owner_kwargs(),
@@ -496,8 +486,6 @@ class RuntimeOrchestrator:
                 retries += 1
         state.reasoning_gateway_retry_count = retries
         state.reasoning_result = self._normalize_reasoning_result(completion.text)
-        # Mirror normalized reasoning into runtime_bundle for downstream consumers.
-        state.runtime_bundle["reasoning_result"] = state.reasoning_result
 
     def _build_reasoning_prompt(self, state: RuntimeState) -> list[dict[str, str]]:
         """Build Step 7 prompt from Step 6 bundle and optional corrective controls."""
@@ -507,12 +495,17 @@ class RuntimeOrchestrator:
                 "current_message": state.runtime_bundle.get("current_message", ""),
                 "recent_turns": state.runtime_bundle.get("recent_turns", []),
                 "context_summary": state.runtime_bundle.get("context_summary", ""),
-                "user_profile": state.runtime_bundle.get("user_profile", {}),
-                "user_preference": state.runtime_bundle.get("user_preference", {}),
-                "user_state": state.runtime_bundle.get("user_state", {}),
+                "style_signals_current": self._current_style_signals(state.runtime_bundle),
+                "user_state_signals_current": self._current_user_state_signals(state.runtime_bundle),
+                "explicit_profile_facts_current": self._current_profile_facts(state.runtime_bundle),
                 "long_term_memory": state.runtime_bundle.get("long_term_memory", []),
             }
         }
+        if state.needs_chat_display_name_suggestion:
+            suggestion_context: dict[str, Any] = {"chat_turn_number": state.chat_turn_number}
+            if state.chat_turn_number in {2, 3} and state.chat is not None:
+                suggestion_context["current_chat_display_name"] = state.chat.chat_display_name
+            payload["chat_display_name_suggestion_context"] = suggestion_context
         if state.reasoning_control:
             payload["reasoning_control"] = state.reasoning_control
         return [
@@ -520,11 +513,59 @@ class RuntimeOrchestrator:
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
 
+    @staticmethod
+    def _current_style_signals(bundle: dict[str, Any]) -> list[str]:
+        existing = bundle.get("style_signals_current")
+        if isinstance(existing, list):
+            return [item for item in existing if isinstance(item, str) and item]
+        user_preference = bundle.get("user_preference")
+        if not isinstance(user_preference, dict):
+            return []
+        result: list[str] = []
+        for signal in STYLE_SIGNAL_VALUES:
+            if signal == "none":
+                continue
+            if user_preference.get(signal) is True:
+                result.append(signal)
+        return result
+
+    @staticmethod
+    def _current_user_state_signals(bundle: dict[str, Any]) -> list[str]:
+        existing = bundle.get("user_state_signals_current")
+        if isinstance(existing, list):
+            return [item for item in existing if isinstance(item, str) and item]
+        user_state = bundle.get("user_state")
+        if not isinstance(user_state, dict):
+            return []
+        signals = user_state.get("signals")
+        if isinstance(signals, list):
+            return [item for item in signals if isinstance(item, str) and item]
+        values: list[str] = []
+        primary = user_state.get("primary_state")
+        secondary = user_state.get("secondary_state")
+        if isinstance(primary, str) and primary:
+            values.append(primary)
+        if isinstance(secondary, str) and secondary:
+            values.append(secondary)
+        return values
+
+    @staticmethod
+    def _current_profile_facts(bundle: dict[str, Any]) -> list[str]:
+        existing = bundle.get("explicit_profile_facts_current")
+        if isinstance(existing, list):
+            return [item for item in existing if isinstance(item, str) and item]
+        user_profile = bundle.get("user_profile")
+        if not isinstance(user_profile, dict):
+            return []
+        facts = user_profile.get("facts")
+        if not isinstance(facts, list):
+            return []
+        return [item for item in facts if isinstance(item, str) and item]
+
     def _normalize_reasoning_result(self, raw_text: str) -> dict[str, Any]:
         """Normalize full_reasoning output into canonical Step 7 schema."""
 
         parsed = self._parse_reasoning_json(raw_text)
-        risk_flags = self._normalize_enum_list(parsed.get("risk_flags"), RISK_FLAG_VALUES, ["none"])
         intent = self._normalize_enum(parsed.get("intent"), INTENT_VALUES, "unclear")
         raw_action = parsed.get("action_recommended")
         action = self._normalize_enum(
@@ -537,11 +578,21 @@ class RuntimeOrchestrator:
             REQUIRED_NEXT_SLOT_VALUES,
             ["core_problem"],
         )
-        style_signals = self._normalize_enum_list(parsed.get("style_signals"), STYLE_SIGNAL_VALUES, ["none"])
-        user_state_signals = self._normalize_enum_list(parsed.get("user_state_signals"), USER_STATE_SIGNAL_VALUES, ["none"])
+        style_signals = self._normalize_enum_list(
+            parsed.get("style_signals_next") or parsed.get("style_signals"),
+            STYLE_SIGNAL_VALUES,
+            ["none"],
+        )
+        user_state_signals = self._normalize_enum_list(
+            parsed.get("user_state_signals_next") or parsed.get("user_state_signals"),
+            USER_STATE_SIGNAL_VALUES,
+            ["none"],
+        )
         case_slots = self._normalize_case_slots(parsed.get("case_slots"))
         turn_strategy = self._normalize_turn_strategy(parsed.get("turn_strategy"))
-        explicit_profile_facts = self._normalize_string_list(parsed.get("explicit_profile_facts"))
+        explicit_profile_facts = self._normalize_string_list(
+            parsed.get("explicit_profile_facts_next") or parsed.get("explicit_profile_facts")
+        )
         suggested_name = parsed.get("suggested_chat_display_name")
         if not isinstance(suggested_name, str) or not suggested_name.strip():
             suggested_name = None
@@ -549,16 +600,14 @@ class RuntimeOrchestrator:
             suggested_name = suggested_name.strip()[:120]
 
         return {
-            "risk_flags": risk_flags,
             "intent": intent,
             "action_recommended": action,
-            "is_context_sufficient": bool(parsed.get("is_context_sufficient", False)),
             "required_next_slots": required_slots,
             "case_slots": case_slots,
             "turn_strategy": turn_strategy,
-            "explicit_profile_facts": explicit_profile_facts,
-            "style_signals": style_signals,
-            "user_state_signals": user_state_signals,
+            "explicit_profile_facts_next": explicit_profile_facts,
+            "style_signals_next": style_signals,
+            "user_state_signals_next": user_state_signals,
             "suggested_chat_display_name": suggested_name,
         }
 
@@ -639,7 +688,7 @@ class RuntimeOrchestrator:
         return {"focus": focus, "angle": angle, "avoid": avoid}
 
     def _validate_and_select_response_method(self, state: RuntimeState) -> None:
-        """Step 8: validate reasoning, apply safety gates, and select response method."""
+        """Step 8: validate reasoning, corrective-retry on schema issues, and select response method."""
 
         while True:
             normalized = self._normalize_reasoning_from_state(state.reasoning_result)
@@ -648,15 +697,6 @@ class RuntimeOrchestrator:
                 normalized["required_next_slots"],
                 normalized["case_slots"],
             )
-            hard_override = self._hard_safety_method(normalized["risk_flags"])
-
-            if hard_override is not None:
-                state.response_method = hard_override
-                state.final_safety_state = self._final_safety_state_for_method(hard_override)
-                state.retrieval_required = False
-                state.normalized_reasoning_result = normalized
-                self._apply_suggested_chat_display_name(state)
-                break
 
             heavy_feedback = schema_heavy_issue
             if heavy_feedback is not None:
@@ -670,10 +710,10 @@ class RuntimeOrchestrator:
                     self._full_reasoning(state)
                     continue
                 state.response_method = ResponseMethod.ASK
-                state.final_safety_state = "normal"
                 state.retrieval_required = False
                 state.normalized_reasoning_result = normalized
                 self._apply_suggested_chat_display_name(state)
+                self._persist_identity_state_updates(state)
                 break
 
             state.reasoning_control = None
@@ -683,16 +723,48 @@ class RuntimeOrchestrator:
             if method == ResponseMethod.ASK and not normalized["required_next_slots"]:
                 normalized["required_next_slots"] = ["core_problem"]
             state.response_method = method
-            state.final_safety_state = "normal"
             state.retrieval_required = method == ResponseMethod.TEACH
             state.normalized_reasoning_result = normalized
             self._apply_suggested_chat_display_name(state)
+            self._persist_identity_state_updates(state)
             break
 
-        state.runtime_bundle["normalized_reasoning_result"] = state.normalized_reasoning_result
-        state.runtime_bundle["final_safety_state"] = state.final_safety_state
-        state.runtime_bundle["response_method"] = state.response_method.value
-        state.runtime_bundle["retrieval_required"] = state.retrieval_required
+    def _persist_identity_state_updates(self, state: RuntimeState) -> None:
+        """Persist Step 7 *_next identity signals once Step 8 validation has passed."""
+
+        reasoning = state.normalized_reasoning_result
+        profile_facts = self._normalize_string_list(reasoning.get("explicit_profile_facts_next"))
+        style_signals = self._normalize_enum_list(
+            reasoning.get("style_signals_next"),
+            STYLE_SIGNAL_VALUES,
+            ["none"],
+        )
+        user_state_signals = self._normalize_enum_list(
+            reasoning.get("user_state_signals_next"),
+            USER_STATE_SIGNAL_VALUES,
+            ["none"],
+        )
+        profile_fields = self.identity_state_store.upsert_user_profile(
+            identity=state.identity,
+            explicit_profile_facts=profile_facts,
+        )
+        preference_fields = self.identity_state_store.upsert_user_preference(
+            identity=state.identity,
+            style_signals=style_signals,
+        )
+        user_state = self.identity_state_store.upsert_user_state(
+            identity=state.identity,
+            user_state_signals=user_state_signals,
+        )
+        state.runtime_bundle["explicit_profile_facts_current"] = profile_facts
+        state.runtime_bundle["style_signals_current"] = style_signals
+        state.runtime_bundle["user_state_signals_current"] = user_state_signals
+        state.runtime_bundle["identity_state_persisted_in_step8"] = True
+        state.runtime_bundle["identity_state_update_meta"] = {
+            "profile_fields_updated": profile_fields,
+            "preference_fields_updated": preference_fields,
+            "updated_user_state": user_state,
+        }
 
     def _normalize_reasoning_from_state(self, value: object) -> dict[str, Any]:
         """Normalize any runtime reasoning payload into canonical schema."""
@@ -700,14 +772,12 @@ class RuntimeOrchestrator:
         if not isinstance(value, dict):
             return self._normalize_reasoning_result("{}")
         return {
-            "risk_flags": self._normalize_enum_list(value.get("risk_flags"), RISK_FLAG_VALUES, ["none"]),
             "intent": self._normalize_enum(value.get("intent"), INTENT_VALUES, "unclear"),
             "action_recommended": self._normalize_enum(
                 value.get("action_recommended", "").upper() if isinstance(value.get("action_recommended"), str) else value.get("action_recommended"),
-                {item.value for item in ResponseMethod},
+                {item.value for item in CONVERSATIONAL_RESPONSE_METHODS},
                 ResponseMethod.ASK.value,
             ),
-            "is_context_sufficient": bool(value.get("is_context_sufficient", False)),
             "required_next_slots": self._normalize_enum_list(
                 value.get("required_next_slots"),
                 REQUIRED_NEXT_SLOT_VALUES,
@@ -715,10 +785,16 @@ class RuntimeOrchestrator:
             ),
             "case_slots": self._normalize_case_slots(value.get("case_slots")),
             "turn_strategy": self._normalize_turn_strategy(value.get("turn_strategy")),
-            "explicit_profile_facts": self._normalize_string_list(value.get("explicit_profile_facts")),
-            "style_signals": self._normalize_enum_list(value.get("style_signals"), STYLE_SIGNAL_VALUES, ["none"]),
-            "user_state_signals": self._normalize_enum_list(
-                value.get("user_state_signals"),
+            "explicit_profile_facts_next": self._normalize_string_list(
+                value.get("explicit_profile_facts_next") or value.get("explicit_profile_facts")
+            ),
+            "style_signals_next": self._normalize_enum_list(
+                value.get("style_signals_next") or value.get("style_signals"),
+                STYLE_SIGNAL_VALUES,
+                ["none"],
+            ),
+            "user_state_signals_next": self._normalize_enum_list(
+                value.get("user_state_signals_next") or value.get("user_state_signals"),
                 USER_STATE_SIGNAL_VALUES,
                 ["none"],
             ),
@@ -736,24 +812,25 @@ class RuntimeOrchestrator:
                 "error_type": "schema_fail_heavy",
                 "error_codes": ["reasoning_result_not_object"],
                 "must_fix_fields": ["reasoning_result"],
-                "must_preserve": ["risk_flags"],
+                "must_preserve": ["action_recommended"],
             }
 
         errors: list[str] = []
         must_fix_fields: list[str] = []
         required_core_fields = {
-            "risk_flags",
             "intent",
             "action_recommended",
-            "is_context_sufficient",
             "required_next_slots",
             "case_slots",
             "turn_strategy",
-            "explicit_profile_facts",
-            "style_signals",
-            "user_state_signals",
         }
         missing = sorted(field for field in required_core_fields if field not in reasoning_result)
+        if "explicit_profile_facts_next" not in reasoning_result and "explicit_profile_facts" not in reasoning_result:
+            missing.append("explicit_profile_facts_next")
+        if "style_signals_next" not in reasoning_result and "style_signals" not in reasoning_result:
+            missing.append("style_signals_next")
+        if "user_state_signals_next" not in reasoning_result and "user_state_signals" not in reasoning_result:
+            missing.append("user_state_signals_next")
         if missing:
             errors.append("missing_required_fields")
             must_fix_fields.extend(missing)
@@ -768,7 +845,7 @@ class RuntimeOrchestrator:
                 "error_type": "schema_fail_heavy",
                 "error_codes": sorted(set(errors)),
                 "must_fix_fields": sorted(set(must_fix_fields)),
-                "must_preserve": ["risk_flags"],
+                "must_preserve": ["action_recommended"],
             }
         return None
 
@@ -778,43 +855,8 @@ class RuntimeOrchestrator:
 
         return [slot for slot in required_slots if not case_slots.get(slot, "").strip()]
 
-    @staticmethod
-    def _hard_safety_method(risk_flags: list[str]) -> ResponseMethod | None:
-        """Map hard safety flags to forced response methods."""
-
-        flags = set(risk_flags)
-        if "crisis_self_harm" in flags or "crisis_harm_others" in flags:
-            return ResponseMethod.CRISIS_SAFE_ONLY
-        if "minor_age_block" in flags:
-            return ResponseMethod.BLOCKED_MINOR
-        if "medical_out_of_scope" in flags or "legal_out_of_scope" in flags:
-            return ResponseMethod.REDIRECT
-        if "policy_bypass" in flags:
-            return ResponseMethod.REFUSAL
-        if "spam_or_nonsense" in flags:
-            return ResponseMethod.SPAM_REPLY
-        return None
-
-    @staticmethod
-    def _final_safety_state_for_method(method: ResponseMethod) -> str:
-        """Map hard safety method to final safety state."""
-
-        mapping = {
-            ResponseMethod.CRISIS_SAFE_ONLY: "crisis_only",
-            ResponseMethod.BLOCKED_MINOR: "blocked",
-            ResponseMethod.REDIRECT: "redirect",
-            ResponseMethod.REFUSAL: "refusal",
-            ResponseMethod.SPAM_REPLY: "spam",
-        }
-        return mapping.get(method, "normal")
-
     def _select_conversational_method(self, normalized: dict[str, Any]) -> ResponseMethod:
-        """Return the conversational method from Step 7 reasoning without override.
-
-        Step 7 (full_reasoning) owns the method decision. Step 8 applies only hard safety
-        overrides (via _hard_safety_method) and structural cleanup; it does not second-guess
-        the LLM's choice here.
-        """
+        """Return the conversational method from Step 7 reasoning without safety remapping."""
         return ResponseMethod(normalized["action_recommended"])
 
     def _knowledge_retrieval(self, state: RuntimeState) -> None:
@@ -823,7 +865,6 @@ class RuntimeOrchestrator:
         gate_pass = (
             state.response_method == ResponseMethod.TEACH
             and state.retrieval_required
-            and state.final_safety_state == "normal"
         )
         if not gate_pass:
             retrieval_debug_meta = {"retrieval_status": "skipped"}
@@ -836,7 +877,7 @@ class RuntimeOrchestrator:
         state.runtime_bundle["retrieval_debug_meta"] = outcome.retrieval_debug_meta
 
     def _apply_suggested_chat_display_name(self, state: RuntimeState) -> None:
-        """Apply Step 7 suggested chat title for the first turn of a new chat."""
+        """Apply Step 7 suggested chat title during the first three turns of a new chat."""
 
         if not state.needs_chat_display_name_suggestion:
             return
@@ -855,7 +896,6 @@ class RuntimeOrchestrator:
 
         state.chat.chat_display_name = clean_name
         state.chat.save(update_fields=["chat_display_name", "updated_at"])
-        state.runtime_bundle["chat_display_name_applied"] = True
 
     def _chat_display_name_for_done(self, state: RuntimeState) -> str:
         """Return canonical chat display name emitted in SSE done event."""
@@ -876,11 +916,11 @@ class RuntimeOrchestrator:
 
         started = time.perf_counter()
         try:
-            result = self.response_generation_service.run(state=state, rebuild_prompt=self._prompt_assembly)
+            with self._llm_trace_scope(state=state, step_key="step11_response_generation_persist"):
+                result = self.response_generation_service.run(state=state)
             state.response_text = result.response_text
             final_method = self._effective_response_method(state)
             state.runtime_bundle["effective_response_method"] = final_method.value
-            state.runtime_bundle.pop("generation_validation_feedback", None)
             self._append_step_trace(
                 state=state,
                 step_key="step11_response_generation_persist",
@@ -893,6 +933,7 @@ class RuntimeOrchestrator:
                 },
                 output_data={
                     "generation_retry_count": result.metadata.get("generation_retry_count", 0),
+                    "generation_retry_reasons": result.metadata.get("generation_retry_reasons", []),
                     "validation_outcome": result.metadata.get("validation_outcome", {}),
                     "fallback_used": result.metadata.get("fallback_used", False),
                     "response_chars": len(state.response_text or ""),
@@ -907,6 +948,7 @@ class RuntimeOrchestrator:
                 "case_resolution_source": state.case_resolution_source,
                 "prompt_debug_meta": state.runtime_bundle.get("prompt_debug_meta", {}),
                 "generation_retry_count": result.metadata.get("generation_retry_count", 0),
+                "generation_retry_reasons": result.metadata.get("generation_retry_reasons", []),
                 "validation_outcome": result.metadata.get("validation_outcome", {}),
                 "fallback_used": result.metadata.get("fallback_used", False),
                 "reasoning_gateway_retry_count": state.reasoning_gateway_retry_count,
@@ -929,6 +971,7 @@ class RuntimeOrchestrator:
                 latency_ms=(time.perf_counter() - started) * 1000.0,
                 input_data={
                     "step8_response_method": state.response_method.value,
+                    "effective_response_method": self._effective_response_method(state).value,
                     "retrieval_required": state.retrieval_required,
                 },
                 output_data={"error": exc.__class__.__name__},
@@ -951,7 +994,8 @@ class RuntimeOrchestrator:
         """Step 12: synchronously finalize usage and quota."""
         started = time.perf_counter()
         try:
-            outcome = self.finalization_service.run(state=state)
+            with self._llm_trace_scope(state=state, step_key="step12_post_turn_finalization"):
+                outcome = self.finalization_service.run(state=state)
             self._append_step_trace(
                 state=state,
                 step_key="step12_post_turn_finalization",
@@ -1004,7 +1048,8 @@ class RuntimeOrchestrator:
         result = None
         success = False
         try:
-            result = runner()
+            with self._llm_trace_scope(state=state, step_key=step_key):
+                result = runner()
             success = True
             return result
         except Exception as exc:
@@ -1064,7 +1109,40 @@ class RuntimeOrchestrator:
                 payload=output_data,
                 level=state.step_trace_level,
             )
+        llm_calls = state.llm_step_calls.pop(step_key, None)
+        if llm_calls:
+            if state.step_trace_level == STEP_TRACE_LEVEL_FULL:
+                entry["llm_calls"] = self._serialize_step_trace_payload(
+                    payload=llm_calls,
+                    level=state.step_trace_level,
+                )
+            else:
+                entry["llm_call_count"] = len(llm_calls)
         state.step_traces.append(entry)
+
+    @contextmanager
+    def _llm_trace_scope(self, *, state: RuntimeState, step_key: str):
+        """Bind gateway call tracing to one runtime step while the runner executes."""
+
+        if state.step_trace_level == STEP_TRACE_LEVEL_OFF:
+            yield
+            return
+
+        previous_recorder = self.llm_gateway.get_trace_recorder()
+        self.llm_gateway.set_trace_recorder(
+            lambda payload: self._record_llm_step_call(state=state, step_key=step_key, payload=payload)
+        )
+        try:
+            yield
+        finally:
+            self.llm_gateway.set_trace_recorder(previous_recorder)
+
+    @staticmethod
+    def _record_llm_step_call(*, state: RuntimeState, step_key: str, payload: dict[str, Any]) -> None:
+        """Append one normalized LLM call payload for a step trace."""
+
+        calls = state.llm_step_calls.setdefault(step_key, [])
+        calls.append(payload)
 
     def _serialize_step_trace_payload(self, *, payload: object, level: str) -> object:
         """Serialize trace payload into a JSON-safe observability representation."""

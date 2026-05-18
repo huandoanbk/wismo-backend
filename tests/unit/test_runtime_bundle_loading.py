@@ -63,20 +63,24 @@ def test_runtime_bundle_resolved_case_loads_context_and_active_memory() -> None:
     MemoryItem.objects.create(
         guest_identity=identity.guest_identity,
         case=case,
-        memory_type="theme",
-        normalized_text="keep this",
-        confidence=0.8,
-        evidence_count=2,
-        is_active=True,
+        segment_status="active",
+        user_concern_summary="User is stressed by work mistakes.",
+        assistant_approach_summary="Assistant reflected self-criticism pattern.",
+        user_response_summary="User acknowledged this pattern and kept exploring.",
+        state_shift="From confusion to clearer self-observation.",
+        open_loops=["Define one practical next step for this week."],
+        confidence=0.82,
     )
     MemoryItem.objects.create(
         guest_identity=identity.guest_identity,
         case=case,
-        memory_type="theme",
-        normalized_text="drop this",
-        confidence=0.7,
-        evidence_count=1,
-        is_active=False,
+        segment_status="closed",
+        user_concern_summary="User opened up about shame after feedback.",
+        assistant_approach_summary="Assistant normalized emotional reaction and de-shamed.",
+        user_response_summary="User felt understood and became more specific.",
+        state_shift="From guarded to open.",
+        open_loops=[],
+        confidence=0.78,
     )
 
     bundle = RuntimeBundleService().build_bundle(
@@ -93,8 +97,10 @@ def test_runtime_bundle_resolved_case_loads_context_and_active_memory() -> None:
     assert bundle["user_profile"] == {}
     assert bundle["user_preference"] == {}
     assert bundle["user_state"] == {}
-    assert len(bundle["long_term_memory"]) == 1
-    assert bundle["long_term_memory"][0]["text"] == "keep this"
+    assert len(bundle["long_term_memory"]) == 2
+    assert "self-criticism pattern" in bundle["long_term_memory"][0]["assistant_approach_summary"]
+    assert bundle["long_term_memory"][0]["open_loops"] == ["Define one practical next step for this week."]
+    assert isinstance(bundle["long_term_memory"][0]["updated_at"], str)
 
 
 def test_runtime_bundle_null_case_keeps_case_level_fields_empty() -> None:

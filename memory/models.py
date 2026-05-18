@@ -6,19 +6,13 @@ import uuid
 
 from django.db import models
 from django.db.models import Q
-from pgvector.django import VectorField
 
 
 class MemoryItem(models.Model):
     """Case-scoped long-term memory extracted from safe conversational turns."""
-
-    MEMORY_TYPE_CHOICES = [
-        ("theme", "theme"),
-        ("trigger", "trigger"),
-        ("coping", "coping"),
-        ("profile_fact", "profile_fact"),
-        ("preference", "preference"),
-        ("state_pattern", "state_pattern"),
+    SEGMENT_STATUS_CHOICES = [
+        ("active", "active"),
+        ("closed", "closed"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -43,27 +37,35 @@ class MemoryItem(models.Model):
         on_delete=models.CASCADE,
         related_name="memory_items",
     )
-    evidence_turn = models.ForeignKey(
+    start_turn = models.ForeignKey(
         "chat.ChatTurn",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="memory_evidence_items",
+        related_name="memory_segment_start_items",
     )
-    memory_type = models.CharField(max_length=40, choices=MEMORY_TYPE_CHOICES)
-    normalized_text = models.TextField()
+    end_turn = models.ForeignKey(
+        "chat.ChatTurn",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="memory_segment_end_items",
+    )
+    segment_status = models.CharField(max_length=16, choices=SEGMENT_STATUS_CHOICES, default="active")
+    user_concern_summary = models.TextField(blank=True, default="")
+    assistant_approach_summary = models.TextField(blank=True, default="")
+    user_response_summary = models.TextField(blank=True, default="")
+    state_shift = models.TextField(blank=True, default="")
+    open_loops = models.JSONField(default=list)
     confidence = models.FloatField(default=0.0)
-    evidence_count = models.PositiveIntegerField(default=1)
-    embedding = VectorField(dimensions=1024, null=True, blank=True)
-    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "memory_items"
         indexes = [
-            models.Index(fields=["user", "case", "is_active"], name="idx_memory_user_case"),
-            models.Index(fields=["guest_identity", "case", "is_active"], name="idx_memory_guest_case"),
+            models.Index(fields=["user", "case", "segment_status"], name="idx_memory_user_case_status"),
+            models.Index(fields=["guest_identity", "case", "segment_status"], name="idx_memory_guest_case_status"),
         ]
 
 

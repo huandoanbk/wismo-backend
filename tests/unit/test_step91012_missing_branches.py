@@ -105,7 +105,7 @@ def test_step9_stitch_llm_fail_fallback_to_primary_chunk() -> None:
     primary = _chunk_ns(5, source_id)
 
     service = _service()
-    service._build_retrieval_query = lambda state: ("query", {})  # type: ignore[assignment]
+    service._build_retrieval_queries = lambda state: (["query"], {})  # type: ignore[assignment]
     service._load_candidates = lambda query_vector: [{"chunk": primary, "score": 0.9}]  # type: ignore[assignment]
 
     def _raise_stitch(*args, **kwargs):
@@ -280,14 +280,15 @@ def _listen_state(*, style_signals=None, user_state_signals=None) -> RuntimeStat
             "current_message": "hello",
             "recent_turns": [],
             "context_summary": "",
+            "long_term_memory": [],
         },
         normalized_reasoning_result={
             "intent": "emotional_support",
             "case_slots": {},
             "required_next_slots": [],
             "turn_strategy": {},
-            "style_signals": style_signals or [],
-            "user_state_signals": user_state_signals or [],
+            "style_signals_next": style_signals or [],
+            "user_state_signals_next": user_state_signals or [],
         },
     )
 
@@ -298,8 +299,7 @@ def test_step10_listen_empty_style_signals_defaults_to_neutral_gentle_brief() ->
 
     result = PromptAssemblyService().build(state=state)
 
-    payload = json.loads(result.prompt_messages[1]["content"])
-    assert payload["style_signals"] == ["neutral_gentle_brief"]
+    assert "Style signals: neutral_gentle_brief" in result.prompt_messages[1]["content"]
 
 
 def test_step10_listen_empty_user_state_signals_defaults_to_neutral() -> None:
@@ -308,8 +308,7 @@ def test_step10_listen_empty_user_state_signals_defaults_to_neutral() -> None:
 
     result = PromptAssemblyService().build(state=state)
 
-    payload = json.loads(result.prompt_messages[1]["content"])
-    assert payload["user_state_signals"] == ["neutral"]
+    assert "User state signals: neutral" in result.prompt_messages[1]["content"]
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -327,53 +326,54 @@ def _reflect_state(*, context_summary="", case_slots=None, intent="") -> Runtime
             "current_message": "hello",
             "recent_turns": [],
             "context_summary": context_summary,
+            "long_term_memory": [],
         },
         normalized_reasoning_result={
             "intent": intent,
             "case_slots": case_slots or {},
             "required_next_slots": [],
             "turn_strategy": {},
-            "style_signals": ["none"],
-            "user_state_signals": ["none"],
+            "style_signals_next": ["none"],
+            "user_state_signals_next": ["none"],
         },
     )
 
 
 def test_step10_reflect_no_context_summary_omits_from_used_fields() -> None:
-    """10.7.2: REFLECT with empty context_summary → context_summary absent from used_fields."""
+    """10.7.2: REFLECT with empty context_summary still builds valid prompt."""
     state = _reflect_state(context_summary="")
 
     result = PromptAssemblyService().build(state=state)
 
-    assert "context_summary" not in result.prompt_debug_meta["used_fields"]
+    assert result.prompt_debug_meta["builder_name"] == "build_reflect_prompt"
 
 
 def test_step10_reflect_with_context_summary_includes_in_used_fields() -> None:
-    """10.7.2: REFLECT with context_summary → context_summary in used_fields."""
+    """10.7.2: REFLECT with context_summary includes section in user content."""
     state = _reflect_state(context_summary="some context")
 
     result = PromptAssemblyService().build(state=state)
 
-    assert "context_summary" in result.prompt_debug_meta["used_fields"]
+    assert "Context summary: some context" in result.prompt_messages[1]["content"]
 
 
 def test_step10_reflect_no_intent_omits_from_used_fields() -> None:
-    """10.7.2: REFLECT with no intent → intent absent from used_fields, builder still runs."""
+    """10.7.2: REFLECT with no intent skips intent line, builder still runs."""
     state = _reflect_state(intent="")
 
     result = PromptAssemblyService().build(state=state)
 
-    assert "intent" not in result.prompt_debug_meta["used_fields"]
+    assert "- Intent:" not in result.prompt_messages[1]["content"]
     assert result.prompt_debug_meta["builder_name"] == "build_reflect_prompt"
 
 
 def test_step10_reflect_with_intent_includes_in_used_fields() -> None:
-    """10.7.2: REFLECT with intent present → intent in used_fields."""
+    """10.7.2: REFLECT with intent present includes intent line."""
     state = _reflect_state(intent="self_understanding")
 
     result = PromptAssemblyService().build(state=state)
 
-    assert "intent" in result.prompt_debug_meta["used_fields"]
+    assert "- Intent: self_understanding" in result.prompt_messages[1]["content"]
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -391,52 +391,50 @@ def _followup_state(*, turn_strategy=None, context_summary="", recent_turns=None
             "current_message": "hello",
             "recent_turns": recent_turns or [],
             "context_summary": context_summary,
+            "long_term_memory": [],
         },
         normalized_reasoning_result={
             "intent": "continue_previous_topic",
             "case_slots": {"core_problem": "stress"},
             "required_next_slots": [],
             "turn_strategy": turn_strategy,
-            "style_signals": ["none"],
-            "user_state_signals": ["none"],
+            "style_signals_next": ["none"],
+            "user_state_signals_next": ["none"],
         },
     )
 
 
 def test_step10_followup_tier1_with_strategy_and_summary() -> None:
-    """10.7.3 tier 1: has turn_strategy + context_summary → both in used_fields."""
+    """10.7.3 tier 1: has turn_strategy + context_summary → both appear in user content."""
     state = _followup_state(
         turn_strategy={"focus": "continuity", "angle": "gentle", "avoid": []},
         context_summary="prior context",
     )
 
     result = PromptAssemblyService().build(state=state)
-    used = result.prompt_debug_meta["used_fields"]
-
-    assert "turn_strategy" in used
-    assert "context_summary" in used
+    content = result.prompt_messages[1]["content"]
+    assert "Context summary: prior context" in content
+    assert "Turn strategy: focus=continuity; angle=gentle" in content
 
 
 def test_step10_followup_tier2_no_strategy_has_summary() -> None:
-    """10.7.3 tier 2: no turn_strategy but has context_summary → summary in fields, strategy absent."""
+    """10.7.3 tier 2: no turn_strategy but has context_summary → summary appears, strategy absent."""
     state = _followup_state(turn_strategy=None, context_summary="prior context")
 
     result = PromptAssemblyService().build(state=state)
-    used = result.prompt_debug_meta["used_fields"]
-
-    assert "context_summary" in used
-    assert "turn_strategy" not in used
+    content = result.prompt_messages[1]["content"]
+    assert "Context summary: prior context" in content
+    assert "Turn strategy:" not in content
 
 
 def test_step10_followup_tier3_neither_strategy_nor_summary() -> None:
-    """10.7.3 tier 3: no turn_strategy, no context_summary → both absent from used_fields."""
+    """10.7.3 tier 3: no turn_strategy, no context_summary → both absent from rendered content."""
     state = _followup_state(turn_strategy=None, context_summary="")
 
     result = PromptAssemblyService().build(state=state)
-    used = result.prompt_debug_meta["used_fields"]
-
-    assert "turn_strategy" not in used
-    assert "context_summary" not in used
+    content = result.prompt_messages[1]["content"]
+    assert "Turn strategy:" not in content
+    assert "Context summary:" not in content
     assert result.prompt_debug_meta["builder_name"] == "build_followup_prompt"
 
 
@@ -493,16 +491,16 @@ def test_step12_quota_exhausted_after_turn_true() -> None:
         normalized_reasoning_result={
             "intent": "emotional_support",
             "case_slots": {},
-            "explicit_profile_facts": [],
-            "style_signals": [],
-            "user_state_signals": [],
+            "explicit_profile_facts_next": [],
+            "style_signals_next": [],
+            "user_state_signals_next": [],
         },
     )
 
     gateway = DummyGateway12(
         responses={
             OperationKey.CONTEXT_SUMMARY_UPDATER.value: json.dumps({"has_meaningful_update": False}),
-            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"candidate_memory_items": []}),
+            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"action": "no_update"}),
         }
     )
 

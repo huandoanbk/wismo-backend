@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from llm_ops.gateway import LLMGateway
 from memory.models import MemoryItem
+from runtime.prompts import CONTEXT_SUMMARY_UPDATER_SYSTEM, LONG_TERM_MEMORY_EXTRACTOR_SYSTEM
 from runtime.services import IdentityStateStoreService, QuotaService
 from runtime.usage import aggregate_usage_events
 from wismo.contracts.enums import OperationKey, Step12FinalizationStatus, UsageAccountingStatus
@@ -87,21 +88,34 @@ class PostTurnFinalizationService:
 
         try:
             reasoning = state.normalized_reasoning_result if isinstance(state.normalized_reasoning_result, dict) else {}
-            profile_fields = self.state_store.upsert_user_profile(
-                identity=state.identity,
-                explicit_profile_facts=self._as_string_list(reasoning.get("explicit_profile_facts")),
-            )
-            preference_fields = self.state_store.upsert_user_preference(
-                identity=state.identity,
-                style_signals=self._as_string_list(reasoning.get("style_signals")),
-            )
-            user_state = self.state_store.upsert_user_state(
-                identity=state.identity,
-                user_state_signals=self._as_string_list(reasoning.get("user_state_signals")),
-            )
-            consolidation_meta["profile_fields_updated"] = profile_fields
-            consolidation_meta["preference_fields_updated"] = preference_fields
-            consolidation_meta["updated_user_state"] = user_state
+            if state.runtime_bundle.get("identity_state_persisted_in_step8"):
+                update_meta = state.runtime_bundle.get("identity_state_update_meta")
+                if isinstance(update_meta, dict):
+                    consolidation_meta["profile_fields_updated"] = update_meta.get("profile_fields_updated", [])
+                    consolidation_meta["preference_fields_updated"] = update_meta.get("preference_fields_updated", [])
+                    consolidation_meta["updated_user_state"] = update_meta.get("updated_user_state", {})
+            else:
+                profile_fields = self.state_store.upsert_user_profile(
+                    identity=state.identity,
+                    explicit_profile_facts=self._as_string_list(
+                        reasoning.get("explicit_profile_facts_next") or reasoning.get("explicit_profile_facts")
+                    ),
+                )
+                preference_fields = self.state_store.upsert_user_preference(
+                    identity=state.identity,
+                    style_signals=self._as_string_list(
+                        reasoning.get("style_signals_next") or reasoning.get("style_signals")
+                    ),
+                )
+                user_state = self.state_store.upsert_user_state(
+                    identity=state.identity,
+                    user_state_signals=self._as_string_list(
+                        reasoning.get("user_state_signals_next") or reasoning.get("user_state_signals")
+                    ),
+                )
+                consolidation_meta["profile_fields_updated"] = profile_fields
+                consolidation_meta["preference_fields_updated"] = preference_fields
+                consolidation_meta["updated_user_state"] = user_state
         except Exception as exc:  # pragma: no cover - defensive path
             consolidation_errors += 1
             logger.exception("step12_identity_state_update_failed", exc_info=exc)
@@ -189,9 +203,7 @@ class PostTurnFinalizationService:
             prompt_messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "Return JSON only: has_meaningful_update(boolean), new_context_summary_text(string)."
-                    ),
+                    "content": CONTEXT_SUMMARY_UPDATER_SYSTEM,
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
@@ -218,16 +230,27 @@ class PostTurnFinalizationService:
         if state.case is None:
             return {"memory_items_upserted_count": 0}
         reasoning = state.normalized_reasoning_result if isinstance(state.normalized_reasoning_result, dict) else {}
-        existing_memory_compact = [
-            {"memory_type": item.get("memory_type"), "text": item.get("text")}
-            for item in state.runtime_bundle.get("long_term_memory", [])
-            if isinstance(item, dict)
-        ][:20]
+        active_record = (
+            MemoryItem.objects.filter(case=state.case, segment_status="active", **state.identity.owner_kwargs())
+            .order_by("-updated_at", "-created_at", "-id")
+            .first()
+        )
+        recent_closed_records = list(
+            MemoryItem.objects.filter(case=state.case, segment_status="closed", **state.identity.owner_kwargs())
+            .order_by("-updated_at", "-created_at", "-id")[:2]
+        )
         payload = {
-            "user_message": state.turn.user_message_text,
+            "current_turn": {
+                "user_message": state.turn.user_message_text,
+                "assistant_response": state.response_text,
+            },
             "case_slots": reasoning.get("case_slots", {}),
-            "explicit_profile_facts": reasoning.get("explicit_profile_facts", []),
-            "existing_memory_compact": existing_memory_compact,
+            "explicit_profile_facts": reasoning.get("explicit_profile_facts_next")
+            or reasoning.get("explicit_profile_facts", []),
+            "active_segment": self._serialize_segment_for_extractor(active_record),
+            "recent_closed_segments": [
+                self._serialize_segment_for_extractor(segment) for segment in reversed(recent_closed_records)
+            ],
         }
         completion = self.llm_gateway.complete(
             operation_key=OperationKey.LONG_TERM_MEMORY_EXTRACTOR,
@@ -235,9 +258,7 @@ class PostTurnFinalizationService:
             prompt_messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "Return JSON only: candidate_memory_items[] of objects {memory_type, normalized_text, confidence}."
-                    ),
+                    "content": LONG_TERM_MEMORY_EXTRACTOR_SYSTEM,
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
@@ -248,52 +269,153 @@ class PostTurnFinalizationService:
             return {"memory_items_upserted_count": 0, "error": "long_term_memory_parse_failed"}
         if not isinstance(loaded, dict):
             return {"memory_items_upserted_count": 0, "error": "long_term_memory_invalid_output"}
-        candidates = loaded.get("candidate_memory_items")
-        if not isinstance(candidates, list):
+
+        action = loaded.get("action")
+        if not isinstance(action, str):
+            return {"memory_items_upserted_count": 0, "error": "long_term_memory_invalid_output"}
+        action = action.strip()
+        allowed_actions = {
+            "no_update",
+            "append_active_segment",
+            "revise_active_segment",
+            "close_active_and_create_new_segment",
+        }
+        if action not in allowed_actions:
+            return {"memory_items_upserted_count": 0, "error": "long_term_memory_invalid_output"}
+        if action == "no_update":
             return {"memory_items_upserted_count": 0}
 
+        now = timezone.now()
         upserted_count = 0
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            memory_type = candidate.get("memory_type")
-            normalized_text = candidate.get("normalized_text")
-            confidence = candidate.get("confidence")
-            if not isinstance(memory_type, str) or not isinstance(normalized_text, str):
-                continue
-            if memory_type not in {choice[0] for choice in MemoryItem.MEMORY_TYPE_CHOICES}:
-                continue
-            text = normalized_text.strip()
-            if not text:
-                continue
-            conf = float(confidence) if isinstance(confidence, (int, float)) else 0.0
-            if conf < 0.5:
-                continue
-            existing = MemoryItem.objects.filter(
-                case=state.case,
-                is_active=True,
-                normalized_text=text,
-                **state.identity.owner_kwargs(),
-            ).first()
-            if existing is not None:
-                existing.evidence_count += 1
-                existing.confidence = max(existing.confidence, conf)
-                existing.evidence_turn = state.turn
-                existing.save(update_fields=["evidence_count", "confidence", "evidence_turn", "updated_at"])
+
+        active_update = self._parse_segment_update(loaded.get("active_segment_update"))
+        closed_update = self._parse_segment_update(loaded.get("closed_active_segment_update"))
+        new_update = self._parse_segment_update(loaded.get("new_segment_update"))
+
+        if action in {"append_active_segment", "revise_active_segment"}:
+            if active_update is None:
+                return {"memory_items_upserted_count": 0, "error": "long_term_memory_invalid_output"}
+            if active_record is None:
+                MemoryItem.objects.create(
+                    **state.identity.owner_kwargs(),
+                    case=state.case,
+                    start_turn=state.turn,
+                    end_turn=state.turn,
+                    segment_status="active",
+                    **active_update,
+                )
+            else:
+                active_record.end_turn = state.turn
+                self._apply_segment_update(active_record, active_update)
+                active_record.save(
+                    update_fields=[
+                        "user_concern_summary",
+                        "assistant_approach_summary",
+                        "user_response_summary",
+                        "state_shift",
+                        "open_loops",
+                        "confidence",
+                        "end_turn",
+                        "updated_at",
+                    ]
+                )
+            return {"memory_items_upserted_count": 1}
+
+        if action == "close_active_and_create_new_segment":
+            if new_update is None:
+                return {"memory_items_upserted_count": 0, "error": "long_term_memory_invalid_output"}
+            if active_record is not None:
+                if closed_update is not None:
+                    self._apply_segment_update(active_record, closed_update)
+                active_record.segment_status = "closed"
+                active_record.end_turn = state.turn
+                active_record.save(
+                    update_fields=[
+                        "user_concern_summary",
+                        "assistant_approach_summary",
+                        "user_response_summary",
+                        "state_shift",
+                        "open_loops",
+                        "confidence",
+                        "segment_status",
+                        "end_turn",
+                        "updated_at",
+                    ]
+                )
                 upserted_count += 1
-                continue
+                MemoryItem.objects.filter(
+                    case=state.case,
+                    segment_status="active",
+                    **state.identity.owner_kwargs(),
+                ).exclude(id=active_record.id).update(segment_status="closed", end_turn=state.turn, updated_at=now)
+            else:
+                # Guardrail: if multiple active rows exist unexpectedly, close them before creating a fresh segment.
+                MemoryItem.objects.filter(
+                    case=state.case,
+                    segment_status="active",
+                    **state.identity.owner_kwargs(),
+                ).update(segment_status="closed", end_turn=state.turn, updated_at=now)
             MemoryItem.objects.create(
                 **state.identity.owner_kwargs(),
                 case=state.case,
-                evidence_turn=state.turn,
-                memory_type=memory_type,
-                normalized_text=text,
-                confidence=conf,
-                evidence_count=1,
-                is_active=True,
+                start_turn=state.turn,
+                end_turn=state.turn,
+                segment_status="active",
+                **new_update,
             )
             upserted_count += 1
-        return {"memory_items_upserted_count": upserted_count}
+            return {"memory_items_upserted_count": upserted_count}
+
+        return {"memory_items_upserted_count": 0}
+
+    @staticmethod
+    def _serialize_segment_for_extractor(segment: MemoryItem | None) -> dict[str, Any] | None:
+        if segment is None:
+            return None
+        open_loops = segment.open_loops if isinstance(segment.open_loops, list) else []
+        return {
+            "user_concern_summary": segment.user_concern_summary or "",
+            "assistant_approach_summary": segment.assistant_approach_summary or "",
+            "user_response_summary": segment.user_response_summary or "",
+            "state_shift": segment.state_shift or "",
+            "open_loops": [item.strip() for item in open_loops if isinstance(item, str) and item.strip()],
+            "updated_at": segment.updated_at.isoformat() if segment.updated_at else "",
+        }
+
+    @staticmethod
+    def _parse_segment_update(value: object) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        user_concern_summary = value.get("user_concern_summary")
+        assistant_approach_summary = value.get("assistant_approach_summary")
+        user_response_summary = value.get("user_response_summary")
+        state_shift = value.get("state_shift")
+        open_loops = value.get("open_loops")
+        confidence = value.get("confidence")
+        if not all(isinstance(item, str) for item in [user_concern_summary, assistant_approach_summary, user_response_summary, state_shift]):
+            return None
+        loops = [item.strip() for item in open_loops if isinstance(item, str) and item.strip()] if isinstance(open_loops, list) else []
+        confidence_value = float(confidence) if isinstance(confidence, (int, float)) else 0.0
+        confidence_value = max(0.0, min(1.0, confidence_value))
+        return {
+            "user_concern_summary": user_concern_summary.strip(),
+            "assistant_approach_summary": assistant_approach_summary.strip(),
+            "user_response_summary": user_response_summary.strip(),
+            "state_shift": state_shift.strip(),
+            "open_loops": loops,
+            "confidence": confidence_value,
+        }
+
+    @staticmethod
+    def _apply_segment_update(record: MemoryItem, update: dict[str, Any]) -> None:
+        record.user_concern_summary = str(update.get("user_concern_summary") or "")
+        record.assistant_approach_summary = str(update.get("assistant_approach_summary") or "")
+        record.user_response_summary = str(update.get("user_response_summary") or "")
+        record.state_shift = str(update.get("state_shift") or "")
+        loops = update.get("open_loops")
+        record.open_loops = [item for item in loops if isinstance(item, str)] if isinstance(loops, list) else []
+        confidence = update.get("confidence")
+        record.confidence = float(confidence) if isinstance(confidence, (int, float)) else 0.0
 
     @staticmethod
     def _as_string_list(value: object) -> list[str]:

@@ -12,6 +12,7 @@ from rest_framework.test import APIRequestFactory
 
 from accounts.models import GuestIdentity
 from accounts.services import GUEST_COOKIE_NAME
+from admin_config.models import RuntimeConfig
 from chat.models import Chat, ChatTurn
 from consents.services import ConsentService
 from llm_ops.bootstrap import bootstrap_default_llm_gateway_config
@@ -257,6 +258,53 @@ def test_gateway_provider_error_persists_failure_usage_event() -> None:
     assert usage_event.status == LLMUsageStatus.FAILED.value
     assert usage_event.error_code == LLM_GATEWAY_PROVIDER_ERROR
     assert usage_event.total_billable_tokens == 0
+
+
+def test_gateway_trace_recorder_captures_prompt_and_response() -> None:
+    """Gateway emits successful call trace payload when recorder is configured."""
+
+    turn = create_turn()
+    traces: list[dict[str, object]] = []
+    gateway = LLMGateway()
+    gateway.set_trace_recorder(lambda payload: traces.append(payload))
+
+    completion = gateway.complete(
+        operation_key=OperationKey.RESPONSE_GENERATION,
+        turn=turn,
+        prompt_messages=[{"role": "user", "content": "hello"}],
+    )
+
+    assert completion.text
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace["operation_key"] == OperationKey.RESPONSE_GENERATION.value
+    assert trace["status"] == LLMUsageStatus.SUCCESS.value
+    assert trace["prompt_messages"] == [{"role": "user", "content": "hello"}]
+    assert trace["response_text"]
+    assert trace["supplier_name"] == "Local Stub Gateway"
+
+
+def test_gateway_trace_recorder_captures_provider_error() -> None:
+    """Gateway emits failed call trace payload with error details."""
+
+    turn = create_turn()
+    traces: list[dict[str, object]] = []
+    gateway = LLMGateway(adapter_registry={"local_stub": RaisingAdapter()})
+    gateway.set_trace_recorder(lambda payload: traces.append(payload))
+
+    with pytest.raises(LLMGatewayProviderError):
+        gateway.complete(
+            operation_key=OperationKey.RESPONSE_GENERATION,
+            turn=turn,
+            prompt_messages=[{"role": "user", "content": "hello"}],
+        )
+
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace["operation_key"] == OperationKey.RESPONSE_GENERATION.value
+    assert trace["status"] == LLMUsageStatus.FAILED.value
+    assert trace["error_code"] == LLM_GATEWAY_PROVIDER_ERROR
+    assert trace["prompt_messages"] == [{"role": "user", "content": "hello"}]
 
 
 def test_openai_style_adapter_serializes_conversation_payload() -> None:
@@ -614,3 +662,30 @@ def test_runtime_orchestrator_marks_step12_failed_on_unhandled_exception() -> No
     assert turn.step12_finalization_status == Step12FinalizationStatus.FAILED.value
     # done event was emitted to the client despite Step 12 crashing.
     assert any("done" in event for event in events)
+
+
+def test_runtime_step_trace_full_includes_llm_call_payloads() -> None:
+    """Full trace mode persists per-step LLM prompt/response call details."""
+
+    RuntimeConfig.objects.update_or_create(
+        key="runtime.step_trace",
+        defaults={"value": {"level": "full"}, "is_active": True},
+    )
+
+    guest = GuestIdentity.objects.create()
+    ConsentService().accept(guest_identity=guest)
+    request = make_guest_request(guest=guest)
+    gate_result = RuntimeOrchestrator().gate.run(request=request, data={"message": "hello world"})
+    list(RuntimeOrchestrator().stream(gate_result))
+
+    turn = ChatTurn.objects.filter(guest_identity=guest).latest("created_at")
+    traces = turn.runtime_metadata["step_traces"]
+    step7 = next(item for item in traces if item["step"] == "step7_full_reasoning")
+    step11 = next(item for item in traces if item["step"] == "step11_response_generation_persist")
+
+    assert isinstance(step7.get("llm_calls"), list)
+    assert step7["llm_calls"]
+    assert step7["llm_calls"][0]["operation_key"] == OperationKey.FULL_REASONING.value
+    assert isinstance(step7["llm_calls"][0]["prompt_messages"], list)
+    assert isinstance(step11.get("llm_calls"), list)
+    assert step11["llm_calls"][0]["operation_key"] == OperationKey.RESPONSE_GENERATION.value

@@ -55,11 +55,31 @@ class OperationalLogInline(admin.TabularInline):
 class CaseAdmin(admin.ModelAdmin):
     """Admin view for backend continuity cases."""
 
-    list_display = ("id", "user", "guest_identity", "topic", "status", "phase", "last_activity_at")
+    list_display = (
+        "id",
+        "user",
+        "guest_identity",
+        "topic",
+        "context_summary_preview",
+        "status",
+        "phase",
+        "last_activity_at",
+    )
     list_filter = ("status", "phase", "created_at", "last_activity_at")
     search_fields = ("topic", "context_summary")
+    readonly_fields = ("context_summary_pretty",)
     date_hierarchy = "last_activity_at"
     ordering = ("-last_activity_at",)
+
+    @admin.display(description="context_summary")
+    def context_summary_preview(self, obj: Case) -> str:
+        text = (obj.context_summary or "").strip()
+        return f"{text[:160]}..." if len(text) > 160 else text
+
+    @admin.display(description="context_summary_full")
+    def context_summary_pretty(self, obj: Case) -> str:
+        text = (obj.context_summary or "").strip()
+        return format_html("<pre style='white-space: pre-wrap; max-width: 1200px;'>{}</pre>", text)
 
 
 @admin.register(Chat)

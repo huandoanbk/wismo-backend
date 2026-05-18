@@ -119,7 +119,7 @@ def test_triage_control_done_reflects_realtime_quota_exhaustion() -> None:
         return TriageResult(
             decision=TriageDecision.BLOCKED_MINOR,
             source="llm",
-            reason_tags=["forced_blocked_minor"],
+            short_reason="forced_blocked_minor",
             confidence="high",
         )
 

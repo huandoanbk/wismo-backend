@@ -148,7 +148,15 @@ def test_erase_all_chat_data_happy_path() -> None:
         user_message_text="hello", assistant_response_text="hi",
     )
     memory = MemoryItem.objects.create(
-        user=user, case=case, memory_type="profile_fact", normalized_text="fact"
+        user=user,
+        case=case,
+        segment_status="active",
+        user_concern_summary="User is navigating work-pressure conflict.",
+        assistant_approach_summary="Assistant stayed reflective and concise.",
+        user_response_summary="User kept engaging and added concrete examples.",
+        state_shift="From vague stress to clearer pressure points.",
+        open_loops=["Need short-term coping plan."],
+        confidence=0.8,
     )
 
     AccountSettingsService().erase_all_chat_data(user)
@@ -336,7 +344,15 @@ def test_delete_all_chat_success_and_data_scrubbed() -> None:
         user_message_text="msg", assistant_response_text="resp",
     )
     MemoryItem.objects.create(
-        user=user, case=case, memory_type="theme", normalized_text="fact"
+        user=user,
+        case=case,
+        segment_status="active",
+        user_concern_summary="User reports recurring self-blame pattern.",
+        assistant_approach_summary="Assistant focused on de-shaming and pattern reflection.",
+        user_response_summary="User acknowledged pattern persists across work incidents.",
+        state_shift="From denial to recognition of recurrence.",
+        open_loops=["Clarify realistic self-compassion action."],
+        confidence=0.8,
     )
 
     client = authenticated_client(user)

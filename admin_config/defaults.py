@@ -92,6 +92,14 @@ _DEFAULT_SPECS: tuple[RuntimeConfigDefaultSpec, ...] = (
         },
         required_fields=("email",),
     ),
+    RuntimeConfigDefaultSpec(
+        key=RuntimeConfigService.PROMPT_ASSEMBLY_KEY,
+        description="Prompt assembly compaction threshold in estimated tokens. Compact triggers when prompt exceeds this limit.",
+        default_value={
+            "max_estimated_tokens": RuntimeConfigService.DEFAULT_PROMPT_ASSEMBLY_POLICY.max_estimated_tokens,
+        },
+        required_fields=("max_estimated_tokens",),
+    ),
 )
 
 

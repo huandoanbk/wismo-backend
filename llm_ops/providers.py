@@ -509,6 +509,11 @@ class _LocalStubTransport:
             text = "I received your message. What is the most important part you want me to understand next?"
         elif operation == OperationKey.RESPONSE_VALIDATION.value:
             text = '{"pass": true, "severity": "light", "error_codes": [], "rewrite_instruction": "", "fallback_recommended": null}'
+        elif operation == OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value:
+            text = (
+                '{"action":"no_update","active_segment_update":null,'
+                '"closed_active_segment_update":null,"new_segment_update":null}'
+            )
         else:
             text = "{}"
         output_tokens = max(1, len(text.split()))

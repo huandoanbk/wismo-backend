@@ -14,11 +14,15 @@ from knowledge.models import ContentChunk
 from llm_ops.errors import LLMGatewayError
 from llm_ops.gateway import LLMGateway
 from runtime.embedding import EmbeddingService, EmbeddingServiceError
-from runtime.prompts import RETRIEVAL_QUERY_BUILDER_SYSTEM
+from runtime.prompts import RETRIEVAL_QUERY_BUILDER_SYSTEM, RETRIEVAL_STITCH_VALIDATOR_SYSTEM
 from runtime.reranker import RerankerClient, RerankerError
 from wismo.contracts.enums import OperationKey
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRIEVAL_QUERIES = 3
+RERANK_COVERAGE_BONUS_PER_EXTRA_HIT = 0.25
+DENSE_COVERAGE_BONUS_PER_EXTRA_HIT = 0.03
 
 
 @dataclass(frozen=True)
@@ -48,11 +52,20 @@ class KnowledgeRetrievalService:
 
         debug = {
             "retrieval_query": "",
+            "retrieval_queries": [],
+            "query_count": 0,
+            "query_embedding_models": [],
+            "embedding_failed_query_count": 0,
+            "per_query_candidate_count": [],
+            "merged_candidate_count": 0,
             "query_embedding_model": "",
             "dense_top_k": 0,
             "reranker_model": "bge-reranker-v2-m3",
             "reranker_used": False,
             "reranker_failed": False,
+            "reranker_partial_failed": False,
+            "reranker_multi_query": True,
+            "coverage_bonus_per_extra_hit": RERANK_COVERAGE_BONUS_PER_EXTRA_HIT,
             "fallback_to_prerank": False,
             "stitch_llm_used": False,
             "stitch_llm_calls": 0,
@@ -61,45 +74,97 @@ class KnowledgeRetrievalService:
             "query_builder_failed": False,
         }
 
-        retrieval_query, query_meta = self._build_retrieval_query(state=state)
+        retrieval_queries, query_meta = self._build_retrieval_queries(state=state)
         debug.update(query_meta)
-        debug["retrieval_query"] = retrieval_query
+        debug["retrieval_queries"] = retrieval_queries
+        debug["query_count"] = len(retrieval_queries)
+        debug["retrieval_query"] = retrieval_queries[0] if retrieval_queries else ""
 
-        try:
-            query_vector, embedding_meta = self.embedding_service.embed_query(query=retrieval_query, turn=state.turn)
-            debug.update(embedding_meta)
-            debug["query_embedding_model"] = embedding_meta.get("query_embedding_model", "")
-        except EmbeddingServiceError:
-            logger.exception("Step 9 embedding failed; fallback to no retrieval result.")
-            debug["retrieval_status"] = "embedding_failed"
-            return RetrievalOutcome(retrieval_result=None, retrieval_debug_meta=debug)
+        all_candidates: list[dict[str, Any]] = []
+        query_models: list[str] = []
+        for query in retrieval_queries:
+            try:
+                query_vector, embedding_meta = self.embedding_service.embed_query(query=query, turn=state.turn)
+                model_name = str(embedding_meta.get("query_embedding_model", "")).strip()
+                if model_name:
+                    query_models.append(model_name)
+            except EmbeddingServiceError:
+                logger.warning("Step 9 embedding failed for one retrieval query.", exc_info=True)
+                debug["embedding_failed_query_count"] += 1
+                debug["per_query_candidate_count"].append(0)
+                continue
+            query_candidates = self._load_candidates(query_vector=query_vector)
+            debug["per_query_candidate_count"].append(len(query_candidates))
+            for candidate in query_candidates:
+                all_candidates.append(
+                    {
+                        "query": query,
+                        "chunk": candidate["chunk"],
+                        "score": candidate["score"],
+                    }
+                )
 
-        candidates = self._load_candidates(query_vector=query_vector)
-        if not candidates:
+        if query_models:
+            debug["query_embedding_models"] = query_models
+            debug["query_embedding_model"] = query_models[0]
+
+        if not all_candidates:
+            if debug["embedding_failed_query_count"] > 0:
+                logger.warning("Step 9 embedding failed across all retrieval queries.")
+                debug["retrieval_status"] = "embedding_failed"
+                return RetrievalOutcome(retrieval_result=None, retrieval_debug_meta=debug)
             logger.warning("Step 9 retrieval found no enabled candidates.")
             debug["retrieval_status"] = "empty_or_failed"
             return RetrievalOutcome(retrieval_result=None, retrieval_debug_meta=debug)
 
+        candidates = self._merge_candidates(all_candidates=all_candidates)
+        debug["merged_candidate_count"] = len(candidates)
         debug["dense_top_k"] = len(candidates)
 
         reranked = candidates
         rerank_score_by_id: dict[str, float] = {}
-        try:
-            ranked_ids = self.reranker_client.rerank(
-                query=retrieval_query,
-                candidates=[{"chunk_id": str(item["chunk"].id), "text": item["chunk"].content_text} for item in candidates],
+        rerank_coverage_by_id: dict[str, int] = {}
+        rerank_failures = 0
+        rerank_candidates = [{"chunk_id": str(item["chunk"].id), "text": item["chunk"].content_text} for item in candidates]
+        for query in retrieval_queries:
+            try:
+                ranked_ids = self.reranker_client.rerank(
+                    query=query,
+                    candidates=rerank_candidates,
+                )
+            except (RerankerError, ValueError):
+                rerank_failures += 1
+                continue
+            for index, chunk_id in enumerate(ranked_ids):
+                score = float(len(ranked_ids) - index)
+                previous = rerank_score_by_id.get(chunk_id, 0.0)
+                if score > previous:
+                    rerank_score_by_id[chunk_id] = score
+                rerank_coverage_by_id[chunk_id] = rerank_coverage_by_id.get(chunk_id, 0) + 1
+
+        if rerank_score_by_id:
+            reranked = self._sort_with_rerank_scores(
+                candidates=candidates,
+                rerank_score_by_id=rerank_score_by_id,
+                rerank_coverage_by_id=rerank_coverage_by_id,
             )
-            rank_map = {chunk_id: index for index, chunk_id in enumerate(ranked_ids)}
-            reranked = sorted(candidates, key=lambda item: rank_map.get(str(item["chunk"].id), 10_000))
             debug["reranker_used"] = True
-            rerank_score_by_id = {
-                chunk_id: float(len(ranked_ids) - index)
-                for index, chunk_id in enumerate(ranked_ids)
-            }
-        except (RerankerError, ValueError):
-            logger.warning("Step 9 reranker failed; fallback to prerank ordering.", exc_info=True)
+        else:
+            logger.warning("Step 9 reranker failed; fallback to prerank ordering.")
             debug["reranker_failed"] = True
             debug["fallback_to_prerank"] = True
+            reranked = sorted(
+                candidates,
+                key=lambda item: (
+                    item["score"] + DENSE_COVERAGE_BONUS_PER_EXTRA_HIT * max(0, int(item.get("coverage_hits", 1)) - 1),
+                    item["score"],
+                ),
+                reverse=True,
+            )
+        if rerank_failures > 0 and rerank_failures < len(retrieval_queries):
+            debug["reranker_partial_failed"] = True
+        if rerank_failures >= len(retrieval_queries):
+            debug["reranker_failed"] = True
 
         primary = reranked[0]
         stitched = [primary["chunk"]]
@@ -138,7 +203,7 @@ class KnowledgeRetrievalService:
             "content_type": primary["chunk"].content_type,
             "dharma_concepts": list(primary["chunk"].dharma_concepts or []),
             "retrieval_score": primary["score"],
-            "rerank_score": rerank_score_by_id.get(str(primary["chunk"].id)),
+            "rerank_score": primary.get("rerank_score") or rerank_score_by_id.get(str(primary["chunk"].id)),
             "rank_final": 1,
             "stitch_span": {
                 "count": len(stitched),
@@ -156,19 +221,12 @@ class KnowledgeRetrievalService:
         }
         return RetrievalOutcome(retrieval_result=retrieval_result, retrieval_debug_meta=debug)
 
-    def _build_retrieval_query(self, *, state) -> tuple[str, dict[str, Any]]:
-        """Build normalized retrieval query via operation registry with fallback."""
+    def _build_retrieval_queries(self, *, state) -> tuple[list[str], dict[str, Any]]:
+        """Build normalized retrieval queries via operation registry with fallback."""
 
         payload = {
             "current_message": state.runtime_bundle.get("current_message", ""),
             "context_summary": state.runtime_bundle.get("context_summary", ""),
-            "normalized_reasoning_result": {
-                "intent": state.normalized_reasoning_result.get("intent", ""),
-                "case_slots": state.normalized_reasoning_result.get("case_slots", {}),
-                "required_next_slots": state.normalized_reasoning_result.get("required_next_slots", []),
-                "is_context_sufficient": state.normalized_reasoning_result.get("is_context_sufficient", False),
-                "turn_strategy": state.normalized_reasoning_result.get("turn_strategy", {}),
-            },
         }
         try:
             completion = self.llm_gateway.complete(
@@ -184,9 +242,13 @@ class KnowledgeRetrievalService:
             )
             parsed = json.loads(completion.text)
             if isinstance(parsed, dict):
-                value = parsed.get("retrieval_query") or parsed.get("query")
-                if isinstance(value, str) and value.strip():
-                    return value.strip(), {
+                normalized = self._normalize_retrieval_queries(
+                    parsed.get("retrieval_queries")
+                    if parsed.get("retrieval_queries") is not None
+                    else (parsed.get("retrieval_query") or parsed.get("query"))
+                )
+                if normalized:
+                    return normalized, {
                         "query_builder_failed": False,
                         "query_builder_error": "",
                     }
@@ -194,10 +256,69 @@ class KnowledgeRetrievalService:
             logger.warning("Step 9 retrieval_query_builder failed; applying fallback query.", exc_info=True)
 
         fallback = str(state.runtime_bundle.get("current_message", "")).strip()
-        return (fallback or "retrieval_no_match_fallback"), {
+        return self._normalize_retrieval_queries(fallback or "retrieval_no_match_fallback"), {
             "query_builder_failed": True,
             "query_builder_error": "retrieval_query_builder_failed",
         }
+
+    @staticmethod
+    def _normalize_retrieval_queries(value: object) -> list[str]:
+        if isinstance(value, str):
+            normalized = [value.strip()]
+        elif isinstance(value, list):
+            normalized = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        else:
+            normalized = []
+        deduped: list[str] = []
+        for item in normalized:
+            if item not in deduped:
+                deduped.append(item[:300])
+        return deduped[:MAX_RETRIEVAL_QUERIES]
+
+    @staticmethod
+    def _merge_candidates(*, all_candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for item in all_candidates:
+            chunk = item["chunk"]
+            chunk_id = str(chunk.id)
+            dense_score = float(item["score"])
+            query = str(item.get("query", ""))
+            existing = merged.get(chunk_id)
+            if existing is None:
+                merged[chunk_id] = {
+                    "chunk": chunk,
+                    "score": dense_score,
+                    "matched_queries": {query} if query else set(),
+                    "coverage_hits": 1,
+                }
+                continue
+            existing["score"] = max(float(existing["score"]), dense_score)
+            if query:
+                existing["matched_queries"].add(query)
+                existing["coverage_hits"] = len(existing["matched_queries"])
+        return sorted(merged.values(), key=lambda item: item["score"], reverse=True)
+
+    @staticmethod
+    def _sort_with_rerank_scores(
+        *,
+        candidates: list[dict[str, Any]],
+        rerank_score_by_id: dict[str, float],
+        rerank_coverage_by_id: dict[str, int],
+    ) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for item in candidates:
+            chunk_id = str(item["chunk"].id)
+            base = rerank_score_by_id.get(chunk_id, 0.0)
+            coverage = rerank_coverage_by_id.get(chunk_id, 0)
+            final = base + RERANK_COVERAGE_BONUS_PER_EXTRA_HIT * max(0, coverage - 1)
+            enriched.append(
+                {
+                    **item,
+                    "rerank_score": final,
+                    "rerank_coverage_hits": coverage,
+                }
+            )
+        return sorted(enriched, key=lambda item: (item["rerank_score"], item["score"]), reverse=True)
 
     def _load_candidates(self, *, query_vector: list[float]) -> list[dict[str, Any]]:
         """Load enabled candidates and score with dense cosine similarity."""
@@ -284,7 +405,7 @@ class KnowledgeRetrievalService:
             prompt_messages=[
                 {
                     "role": "system",
-                    "content": "Return JSON only: {\"decision\": \"KEEP|STITCH_PREV|STITCH_NEXT|STITCH_BOTH\"}",
+                    "content": RETRIEVAL_STITCH_VALIDATOR_SYSTEM,
                 },
                 {
                     "role": "user",

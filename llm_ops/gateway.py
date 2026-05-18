@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
@@ -55,6 +57,17 @@ class LLMGateway:
 
         self.adapter_registry = self._default_adapter_registry() if adapter_registry is None else adapter_registry
         self.quota_service = QuotaService()
+        self._trace_recorder: Callable[[dict[str, Any]], None] | None = None
+
+    def set_trace_recorder(self, recorder: Callable[[dict[str, Any]], None] | None) -> None:
+        """Set or clear optional runtime trace recorder for LLM calls."""
+
+        self._trace_recorder = recorder
+
+    def get_trace_recorder(self) -> Callable[[dict[str, Any]], None] | None:
+        """Return the current LLM trace recorder."""
+
+        return self._trace_recorder
 
     def complete(
         self,
@@ -101,6 +114,16 @@ class LLMGateway:
                 latency_ms,
                 str(turn.id) if turn is not None else "none",
             )
+            self._emit_trace(
+                operation_code=operation.code,
+                gateway=gateway,
+                prompt_messages=prompt_messages,
+                status=LLMUsageStatus.FAILED.value,
+                latency_ms=latency_ms,
+                error_code=exc.code,
+                error_status=exc.status_code,
+                error_message=exc.message,
+            )
             raise
         except Exception as exc:  # pragma: no cover - defensive safety net
             latency_ms = int((perf_counter() - started) * 1000)
@@ -124,6 +147,16 @@ class LLMGateway:
                 latency_ms,
                 str(turn.id) if turn is not None else "none",
             )
+            self._emit_trace(
+                operation_code=operation.code,
+                gateway=gateway,
+                prompt_messages=prompt_messages,
+                status=LLMUsageStatus.FAILED.value,
+                latency_ms=latency_ms,
+                error_code=LLM_GATEWAY_PROVIDER_ERROR,
+                error_status=500,
+                error_message=str(exc),
+            )
             raise LLMGatewayProviderError(message=str(exc)) from exc
 
         latency_ms = int((perf_counter() - started) * 1000)
@@ -143,6 +176,20 @@ class LLMGateway:
             turn=turn,
             tokens=usage_event.total_billable_tokens,
             operation_key=operation.code,
+        )
+        self._emit_trace(
+            operation_code=operation.code,
+            gateway=gateway,
+            prompt_messages=prompt_messages,
+            status=LLMUsageStatus.SUCCESS.value,
+            latency_ms=latency_ms,
+            response_text=provider_response.text,
+            usage={
+                "input_tokens": provider_response.input_tokens,
+                "cached_input_tokens": provider_response.cached_input_tokens,
+                "output_tokens": provider_response.output_tokens,
+                "cache_write_tokens": provider_response.cache_write_tokens,
+            },
         )
         return LLMCompletion(text=provider_response.text, usage_event=usage_event)
 
@@ -274,3 +321,46 @@ class LLMGateway:
             )
             # Do not block runtime on quota persistence hiccups in MVP.
             return
+
+    def _emit_trace(
+        self,
+        *,
+        operation_code: str,
+        gateway: LLMGatewayConfig,
+        prompt_messages: list[dict[str, Any]],
+        status: str,
+        latency_ms: int,
+        response_text: str | None = None,
+        usage: dict[str, int] | None = None,
+        error_code: str | None = None,
+        error_status: int | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Emit one LLM call trace payload to the configured recorder."""
+
+        if self._trace_recorder is None:
+            return
+
+        payload: dict[str, Any] = {
+            "operation_key": operation_code,
+            "supplier_name": gateway.display_name,
+            "model_name": gateway.model_name,
+            "status": status,
+            "latency_ms": latency_ms,
+            "prompt_messages": copy.deepcopy(prompt_messages),
+        }
+        if response_text is not None:
+            payload["response_text"] = response_text
+        if usage is not None:
+            payload["usage"] = usage
+        if error_code is not None:
+            payload["error_code"] = error_code
+        if error_status is not None:
+            payload["error_status"] = error_status
+        if error_message:
+            payload["error_message"] = error_message
+
+        try:
+            self._trace_recorder(payload)
+        except Exception:  # pragma: no cover - observability hook must never fail runtime.
+            logger.exception("llm_trace_recorder_failed")

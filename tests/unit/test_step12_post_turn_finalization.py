@@ -11,6 +11,7 @@ from accounts.models import GuestIdentity
 from chat.models import Case, Chat, ChatTurn
 from chat.services import IdentityContext
 from llm_ops.models import LLMUsageEvent
+from memory.models import MemoryItem
 from runtime.finalization import PostTurnFinalizationService
 from runtime.models import UsageQuotaWindow
 from runtime.services import IdentityStateStoreService, QuotaService
@@ -65,9 +66,9 @@ def _create_state() -> SimpleNamespace:
         normalized_reasoning_result={
             "intent": "ask_how_to_respond",
             "case_slots": {"core_problem": "conflict"},
-            "explicit_profile_facts": [],
-            "style_signals": [],
-            "user_state_signals": [],
+            "explicit_profile_facts_next": [],
+            "style_signals_next": [],
+            "user_state_signals_next": [],
         },
     )
 
@@ -102,7 +103,7 @@ def test_step12_usage_and_quota_success_path() -> None:
             OperationKey.CONTEXT_SUMMARY_UPDATER.value: json.dumps(
                 {"has_meaningful_update": True, "new_context_summary_text": "new summary"}
             ),
-            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"candidate_memory_items": []}),
+            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"action": "no_update"}),
         }
     )
     outcome = PostTurnFinalizationService(
@@ -128,7 +129,7 @@ def test_step12_marks_partial_when_consolidation_subtask_fails() -> None:
     gateway = DummyGateway(
         responses={
             OperationKey.CONTEXT_SUMMARY_UPDATER.value: "{bad-json",
-            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"candidate_memory_items": []}),
+            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"action": "no_update"}),
         }
     )
     outcome = PostTurnFinalizationService(
@@ -167,7 +168,7 @@ def test_step12_ignores_quota_consume_override_under_realtime_usage_mode() -> No
     gateway = DummyGateway(
         responses={
             OperationKey.CONTEXT_SUMMARY_UPDATER.value: json.dumps({"has_meaningful_update": False}),
-            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"candidate_memory_items": []}),
+            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"action": "no_update"}),
         }
     )
 
@@ -189,14 +190,14 @@ def test_step12_rule_based_updates_persist_identity_state() -> None:
     state.normalized_reasoning_result = {
         "intent": "self_understanding",
         "case_slots": {"core_problem": "stress"},
-        "explicit_profile_facts": ["works remotely", "works remotely"],
-        "style_signals": ["prefers_brief_response", "prefers_brief_response"],
-        "user_state_signals": ["overwhelmed", "ruminating"],
+        "explicit_profile_facts_next": ["works remotely", "works remotely"],
+        "style_signals_next": ["prefers_brief_response", "prefers_brief_response"],
+        "user_state_signals_next": ["overwhelmed", "ruminating"],
     }
     gateway = DummyGateway(
         responses={
             OperationKey.CONTEXT_SUMMARY_UPDATER.value: json.dumps({"has_meaningful_update": False}),
-            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"candidate_memory_items": []}),
+            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps({"action": "no_update"}),
         }
     )
     service = PostTurnFinalizationService(
@@ -211,3 +212,66 @@ def test_step12_rule_based_updates_persist_identity_state() -> None:
     assert profile["facts"] == ["works remotely"]
     assert preference.get("prefers_brief_response") is True
     assert snapshot.get("primary_state") == "overwhelmed"
+
+
+def test_step12_long_term_memory_closes_old_segment_and_opens_new_active_segment() -> None:
+    state = _create_state()
+    old_segment = MemoryItem.objects.create(
+        guest_identity=state.identity.guest_identity,
+        case=state.case,
+        segment_status="active",
+        user_concern_summary="User started discussing work-related self-blame.",
+        assistant_approach_summary="Assistant validated distress and reflected the pattern.",
+        user_response_summary="User opened more about fear of judgment.",
+        state_shift="From guarded to clearer disclosure.",
+        open_loops=["Need practical step for current week."],
+        confidence=0.8,
+    )
+    gateway = DummyGateway(
+        responses={
+            OperationKey.CONTEXT_SUMMARY_UPDATER.value: json.dumps({"has_meaningful_update": False}),
+            OperationKey.LONG_TERM_MEMORY_EXTRACTOR.value: json.dumps(
+                {
+                    "action": "close_active_and_create_new_segment",
+                    "closed_active_segment_update": {
+                        "user_concern_summary": "User clarified shame after feedback is the core blocker.",
+                        "assistant_approach_summary": "Assistant helped separate mistake from self-worth.",
+                        "user_response_summary": "User felt relief and became more specific about goals.",
+                        "state_shift": "From self-blame spiral to clearer target for change.",
+                        "open_loops": ["Define first confidence-recovery action."],
+                        "confidence": 0.86,
+                    },
+                    "new_segment_update": {
+                        "user_concern_summary": "User wants a practical short-term plan to recover confidence this week.",
+                        "assistant_approach_summary": "Assistant should move to structured action planning.",
+                        "user_response_summary": "Pending next turn.",
+                        "state_shift": "From reflection phase to planning phase.",
+                        "open_loops": ["Pick one actionable step for tomorrow."],
+                        "confidence": 0.84,
+                    },
+                }
+            ),
+        }
+    )
+
+    outcome = PostTurnFinalizationService(
+        llm_gateway=gateway,
+        quota_service=QuotaService(),
+        state_store=IdentityStateStoreService(),
+    ).run(state=state)
+
+    old_segment.refresh_from_db()
+    assert old_segment.segment_status == "closed"
+    assert old_segment.end_turn_id == state.turn.id
+    assert outcome.consolidation_meta["memory_items_upserted_count"] == 2
+    new_active = (
+        MemoryItem.objects.filter(
+            case=state.case,
+            guest_identity=state.identity.guest_identity,
+            segment_status="active",
+        )
+        .exclude(id=old_segment.id)
+        .first()
+    )
+    assert new_active is not None
+    assert "practical short-term plan" in new_active.user_concern_summary

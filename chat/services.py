@@ -13,6 +13,7 @@ from accounts.models import GuestIdentity, User
 from chat.models import Case, Chat, ChatTurn
 from llm_ops.errors import LLM_GATEWAY_CONFIG_INVALID, LLM_GATEWAY_CONFIG_MISSING, LLMGatewayError
 from llm_ops.gateway import LLMGateway
+from runtime.prompts import CASE_CLASSIFIER_SYSTEM
 from wismo.contracts.codes import (
     CHAT_ACCESS_DENIED,
     CHAT_NOT_FOUND,
@@ -336,19 +337,13 @@ class CaseResolutionService:
         prompt_messages = [
             {
                 "role": "system",
-                "content": (
-                    "Return JSON only with keys: "
-                    "{\"decision\": \"matched_existing_case|new_case|ambiguous\", "
-                    "\"matched_case_id\": \"<uuid-or-empty>\"}. "
-                    "When decision is matched_existing_case, include matched_case_id from recent_case_summaries. "
-                    "Otherwise matched_case_id can be empty."
-                ),
+                "content": CASE_CLASSIFIER_SYSTEM,
             },
             {
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "current_message": chat.opening_input_text or message,
+                        "current_message": message,
                         "recent_case_summaries": summaries,
                     },
                     ensure_ascii=False,
@@ -408,7 +403,6 @@ class CaseResolutionService:
             summaries.append(
                 {
                     "case_id": str(case.id),
-                    "topic": case.topic,
                     "context_summary": case.context_summary,
                 }
             )
