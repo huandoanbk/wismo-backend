@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from llm_ops.gateway import LLMGateway
 from memory.models import MemoryItem
+from runtime.operational_logs import record_operational_log
 from runtime.prompts import CONTEXT_SUMMARY_UPDATER_SYSTEM, LONG_TERM_MEMORY_EXTRACTOR_SYSTEM
 from runtime.services import IdentityStateStoreService, QuotaService
 from runtime.usage import aggregate_usage_events
@@ -157,6 +158,31 @@ class PostTurnFinalizationService:
         else:
             step12_status = Step12FinalizationStatus.FINALIZED.value
 
+        if step12_status == Step12FinalizationStatus.FAILED.value:
+            record_operational_log(
+                event_key="step12_failed",
+                component="runtime.finalization",
+                message="Step 12 finalization failed",
+                context={
+                    "errors": consolidation_meta["consolidation_log_meta"]["errors"],
+                    "usage_status": usage_status,
+                    "turn_id": str(turn.id),
+                },
+                turn=turn,
+            )
+        elif step12_status == Step12FinalizationStatus.PARTIAL.value:
+            record_operational_log(
+                event_key="step12_partial",
+                level="warning",
+                component="runtime.finalization",
+                message="Step 12 finalization partial",
+                context={
+                    "errors": consolidation_meta["consolidation_log_meta"]["errors"],
+                    "consolidation_error_count": consolidation_errors,
+                    "turn_id": str(turn.id),
+                },
+                turn=turn,
+            )
         turn.usage_accounting_status = usage_status
         turn.step12_finalization_status = step12_status
         turn.finalized_at = turn.finalized_at or timezone.now()

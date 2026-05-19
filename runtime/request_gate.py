@@ -13,6 +13,7 @@ from chat.models import Chat
 from chat.services import IdentityContext
 from consents.services import ConsentService
 from runtime.models import UsageQuotaWindow
+from runtime.operational_logs import record_operational_log
 from runtime.services import QuotaService, RuntimeConfigService
 from wismo.contracts.chat import ChatSendPayload
 from wismo.contracts.codes import (
@@ -252,5 +253,16 @@ class RequestGatePipeline:
             Step12FinalizationStatus.PENDING.value,
             Step12FinalizationStatus.PROCESSING.value,
         }:
+            record_operational_log(
+                event_key="turn_gate_blocked_in_progress",
+                level="warning",
+                component="runtime.request_gate",
+                message="Gate blocked: previous turn finalization still in progress",
+                context={
+                    "blocked_turn_id": str(previous.id),
+                    "step12_finalization_status": previous.step12_finalization_status,
+                },
+                turn=previous,
+            )
             return GateResult(False, TURN_IN_PROGRESS, 409)
         return GateResult(True)

@@ -20,6 +20,7 @@ from llm_ops.errors import (
 from llm_ops.gateway import LLMGateway
 from runtime.embedding import EmbeddingService
 from runtime.finalization import PostTurnFinalizationService
+from runtime.operational_logs import record_operational_log
 from runtime.prompt_assembly import PromptAssemblyService
 from runtime.prompts import (
     FULL_REASONING_SYSTEM_NO_CHAT_DISPLAY_NAME,
@@ -220,6 +221,29 @@ class RuntimeOrchestrator:
                 },
             )
             if control_response is not None:
+                _triage_level = (
+                    "critical" if state.triage_decision == TriageDecision.CRISIS_HOTLINE_IMMEDIATE
+                    else "warning" if state.triage_decision in {
+                        TriageDecision.BLOCKED_MINOR,
+                        TriageDecision.POLICY_BYPASS_REFUSAL,
+                    }
+                    else "info"
+                )
+                record_operational_log(
+                    event_key="triage_control_triggered",
+                    level=_triage_level,
+                    component="runtime.orchestrator",
+                    message=f"Triage control: {state.triage_decision.value}",
+                    context={
+                        "triage_decision": state.triage_decision.value,
+                        "triage_source": state.triage_result.source if state.triage_result else "unknown",
+                        "short_reason": state.triage_result.short_reason if state.triage_result else "",
+                        "response_method": control_response.response_method.value,
+                        "turn_id": str(state.turn.id) if state.turn else None,
+                        "chat_id": str(state.chat.id) if state.chat else None,
+                    },
+                    turn=state.turn,
+                )
                 control_quota_exhausted = self._run_traced_step(
                     state=state,
                     step_key="step12_control_quota_state",
@@ -311,6 +335,18 @@ class RuntimeOrchestrator:
                         "runtime_metadata",
                     ]
                 )
+            record_operational_log(
+                event_key="turn_failed",
+                component="runtime.orchestrator",
+                message=f"Turn failed: {exc.code}",
+                context={
+                    "error": exc.code,
+                    "status_code": exc.status_code,
+                    "turn_id": str(state.turn.id) if state.turn else None,
+                    "chat_id": str(state.chat.id) if state.chat else None,
+                },
+                turn=state.turn,
+            )
             yield _sse_event("error", {"error": exc.code, "status_code": exc.status_code})
             return
         except Exception as exc:
@@ -327,6 +363,17 @@ class RuntimeOrchestrator:
                 state.turn.runtime_metadata = runtime_metadata
                 state.turn.runtime_metadata["error"] = exc.__class__.__name__
                 state.turn.save(update_fields=["status", "step12_finalization_status", "runtime_metadata"])
+            record_operational_log(
+                event_key="turn_failed",
+                component="runtime.orchestrator",
+                message=f"Turn failed: {exc.__class__.__name__}",
+                context={
+                    "error": exc.__class__.__name__,
+                    "turn_id": str(state.turn.id) if state.turn else None,
+                    "chat_id": str(state.chat.id) if state.chat else None,
+                },
+                turn=state.turn,
+            )
             yield _sse_event("error", {"error": "internal_error", "status_code": 500})
             raise
 
@@ -487,6 +534,18 @@ class RuntimeOrchestrator:
                 if exc.code not in TRANSIENT_REASONING_ERROR_CODES or retries >= MAX_REASONING_GATEWAY_RETRIES:
                     raise
                 retries += 1
+                record_operational_log(
+                    event_key="llm_reasoning_retry",
+                    level="warning",
+                    component="runtime.orchestrator",
+                    message=f"Full reasoning retry {retries}: {exc.code}",
+                    context={
+                        "retry_count": retries,
+                        "error": exc.code,
+                        "turn_id": str(state.turn.id) if state.turn else None,
+                    },
+                    turn=state.turn,
+                )
         state.reasoning_gateway_retry_count = retries
         state.reasoning_result = self._normalize_reasoning_result(completion.text)
 
@@ -928,6 +987,20 @@ class RuntimeOrchestrator:
             with self._llm_trace_scope(state=state, step_key="step11_response_generation_persist"):
                 result = self.response_generation_service.run(state=state)
             state.response_text = result.response_text
+            if result.metadata.get("fallback_used"):
+                record_operational_log(
+                    event_key="response_generation_fallback",
+                    level="warning",
+                    component="runtime.orchestrator",
+                    message="Response generation fallback used",
+                    context={
+                        "generation_retry_count": result.metadata.get("generation_retry_count", 0),
+                        "generation_retry_reasons": result.metadata.get("generation_retry_reasons", []),
+                        "turn_id": str(state.turn.id) if state.turn else None,
+                        "chat_id": str(state.chat.id) if state.chat else None,
+                    },
+                    turn=state.turn,
+                )
             final_method = self._effective_response_method(state)
             state.runtime_bundle["effective_response_method"] = final_method.value
             self._append_step_trace(

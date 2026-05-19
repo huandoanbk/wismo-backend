@@ -18,6 +18,7 @@ class LLMUsageEventInline(admin.TabularInline):
     model = LLMUsageEvent
     extra = 0
     can_delete = False
+    ordering = ("created_at",)
     fields = (
         "created_at",
         "operation_key",
@@ -157,9 +158,6 @@ class ChatTurnAdmin(admin.ModelAdmin):
     inlines = (LLMUsageEventInline, OperationalLogInline)
 
     def has_add_permission(self, request):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
         return False
 
     @admin.display(description="step traces")

@@ -105,6 +105,18 @@ class LLMGateway:
                     primary_exc.status_code,
                     str(turn.id) if turn is not None else "none",
                 )
+                record_operational_log(
+                    event_key="llm_fallback_triggered",
+                    level="warning",
+                    component="llm_ops.gateway",
+                    message=f"LLM fallback triggered: {operation.code} — primary error {primary_exc.code}",
+                    context={
+                        "operation": operation.code,
+                        "primary_error": primary_exc.code,
+                        "primary_status": primary_exc.status_code,
+                    },
+                    turn=turn,
+                )
                 try:
                     return self._complete_once(
                         operation=operation,
@@ -195,6 +207,35 @@ class LLMGateway:
                 error_status=exc.status_code,
                 error_message=exc.message,
             )
+            if isinstance(exc, LLMGatewayProviderUnavailableError):
+                record_operational_log(
+                    event_key="llm_provider_unavailable",
+                    component="llm_ops.gateway",
+                    message=f"LLM provider unavailable: {operation.code} via {gateway.display_name} ({latency_ms}ms)",
+                    context={
+                        "operation": operation.code,
+                        "supplier": gateway.display_name,
+                        "model": gateway.model_name,
+                        "latency_ms": latency_ms,
+                        "error": exc.code,
+                    },
+                    turn=turn,
+                )
+            elif isinstance(exc, LLMGatewayProviderError):
+                record_operational_log(
+                    event_key="llm_provider_error",
+                    component="llm_ops.gateway",
+                    message=f"LLM provider error: {operation.code} via {gateway.display_name} ({latency_ms}ms)",
+                    context={
+                        "operation": operation.code,
+                        "supplier": gateway.display_name,
+                        "model": gateway.model_name,
+                        "latency_ms": latency_ms,
+                        "error": exc.code,
+                        "status_code": exc.status_code,
+                    },
+                    turn=turn,
+                )
             raise
         except Exception as exc:  # pragma: no cover - defensive safety net
             latency_ms = int((perf_counter() - started) * 1000)
