@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from django.core.exceptions import ValidationError
@@ -22,7 +23,7 @@ from accounts.services import (
     IdentityService,
 )
 from runtime.services import RuntimeConfigService
-from wismo.contracts.codes import INVALID_REQUEST
+from wismo.contracts.codes import INVALID_CHAT_ID, INVALID_REQUEST
 from wismo.contracts.error import keyword_error_payload
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,20 @@ def required_string(data: dict[str, Any], field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AccountServiceError(INVALID_REQUEST, 400)
     return value.strip()
+
+
+def optional_uuid(data: dict[str, Any], field_name: str) -> uuid.UUID | None:
+    """Read an optional UUID field from request data."""
+
+    if field_name not in data:
+        return None
+    value = data.get(field_name)
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except ValueError as exc:
+        raise AccountServiceError(INVALID_CHAT_ID, 400) from exc
 
 
 class GuestInitView(APIView):
@@ -210,16 +225,21 @@ class LoginView(APIView):
     def post(self, request):
         """Authenticate an email/password login request."""
 
+        attach_chat_id: uuid.UUID | None = None
         try:
+            attach_chat_id = optional_uuid(request.data, "attach_chat_id")
             AccountAuthService().login(
                 request=request,
                 email=required_string(request.data, "email"),
                 password=required_string(request.data, "password"),
+                attach_chat_id=attach_chat_id,
             )
         except AccountServiceError as exc:
             return Response(error_payload(exc), status=exc.status_code)
-
-        return Response(IdentityService().session_status(request=request), status=200)
+        response = Response(IdentityService().session_status(request=request), status=200)
+        if attach_chat_id is not None:
+            response.delete_cookie(GUEST_COOKIE_NAME, samesite="Lax")
+        return response
 
 
 class GoogleLoginView(APIView):
@@ -231,15 +251,20 @@ class GoogleLoginView(APIView):
     def post(self, request):
         """Verify a Google credential relayed by BFF and create session."""
 
+        attach_chat_id: uuid.UUID | None = None
         try:
+            attach_chat_id = optional_uuid(request.data, "attach_chat_id")
             AccountAuthService().login_with_google(
                 request=request,
                 credential=required_string(request.data, "credential"),
+                attach_chat_id=attach_chat_id,
             )
         except AccountServiceError as exc:
             return Response(error_payload(exc), status=exc.status_code)
-
-        return Response(IdentityService().session_status(request=request), status=200)
+        response = Response(IdentityService().session_status(request=request), status=200)
+        if attach_chat_id is not None:
+            response.delete_cookie(GUEST_COOKIE_NAME, samesite="Lax")
+        return response
 
 
 class AccountMeView(APIView):

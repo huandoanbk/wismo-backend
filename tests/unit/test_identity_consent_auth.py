@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 from accounts.models import GuestIdentity, User
 from accounts.services import GUEST_COOKIE_NAME
 from chat.models import Case, Chat, ChatTurn
+from consents.models import ConsentRecord
 from consents.services import ConsentService
 from runtime.models import UsageQuotaWindow
 
@@ -446,6 +447,105 @@ def test_login_verified_unverified_invalid_and_logout() -> None:
     assert logout.data["session_state"] == "unauthenticated"
 
 
+def test_login_with_attach_chat_id_attaches_guest_chat_and_clears_cookie() -> None:
+    """Login attach preserves active user consent and clears guest cookie."""
+
+    user = create_verified_user("attach-login@example.com")
+    ConsentService().accept(user=user)
+    guest = GuestIdentity.objects.create(expires_at=timezone.now() + timedelta(hours=1))
+    case = Case.objects.create(
+        guest_identity=guest,
+        topic="guest topic",
+        context_summary="guest summary",
+    )
+    chat = Chat.objects.create(
+        guest_identity=guest,
+        case=case,
+        opening_input_text="hello",
+        chat_display_name="Guest Chat",
+        is_archived=False,
+        disabled_at=None,
+    )
+    turn = ChatTurn.objects.create(
+        guest_identity=guest,
+        chat=chat,
+        case=case,
+        user_message_text="guest message",
+        status="completed",
+    )
+    guest_quota = UsageQuotaWindow.current_for_identity(guest_identity=guest)
+    guest_quota.is_exhausted = True
+    guest_quota.save(update_fields=["is_exhausted", "updated_at"])
+
+    client = api_client_with_guest(guest)
+    response = client.post(
+        "/api/accounts/login/",
+        {"email": user.email, "password": PASSWORD, "attach_chat_id": str(chat.id)},
+        format="json",
+    )
+
+    chat.refresh_from_db()
+    case.refresh_from_db()
+    turn.refresh_from_db()
+
+    assert response.status_code == 200
+    assert response.data["session_state"] == "registered"
+    assert response.data["consent_state"] == "accepted"
+    assert chat.user_id == user.id
+    assert chat.guest_identity_id is None
+    assert case.user_id == user.id
+    assert case.guest_identity_id is None
+    assert turn.user_id == user.id
+    assert turn.guest_identity_id is None
+    assert ConsentRecord.objects.filter(user=user, consent_version=ConsentRecord.CURRENT_VERSION).count() == 1
+    assert response.cookies[GUEST_COOKIE_NAME]["max-age"] == 0
+
+
+def test_login_with_attach_chat_id_requires_valid_guest_cookie() -> None:
+    """Login attach rejects requests without a valid guest identity cookie."""
+
+    user = create_verified_user("attach-no-guest@example.com")
+    chat = Chat.objects.create(
+        guest_identity=GuestIdentity.objects.create(expires_at=timezone.now() + timedelta(hours=1)),
+        opening_input_text="hello",
+        chat_display_name="Guest Chat",
+    )
+    client = APIClient()
+    response = client.post(
+        "/api/accounts/login/",
+        {"email": user.email, "password": PASSWORD, "attach_chat_id": str(chat.id)},
+        format="json",
+    )
+
+    assert response.status_code == 401
+    assert response.data["error"] == "guest_identity_not_resolved"
+    assert client.get("/api/accounts/session/").data["session_state"] == "unauthenticated"
+
+
+def test_login_with_attach_chat_id_rejects_chat_not_owned_by_guest_cookie() -> None:
+    """Login attach fails when attach_chat_id does not belong to request guest."""
+
+    user = create_verified_user("attach-mismatch@example.com")
+    request_guest = GuestIdentity.objects.create(expires_at=timezone.now() + timedelta(hours=1))
+    another_guest = GuestIdentity.objects.create(expires_at=timezone.now() + timedelta(hours=1))
+    other_chat = Chat.objects.create(
+        guest_identity=another_guest,
+        opening_input_text="hello",
+        chat_display_name="Other guest chat",
+    )
+
+    client = api_client_with_guest(request_guest)
+    response = client.post(
+        "/api/accounts/login/",
+        {"email": user.email, "password": PASSWORD, "attach_chat_id": str(other_chat.id)},
+        format="json",
+    )
+
+    assert response.status_code == 404
+    assert response.data["error"] == "guest_chat_not_found"
+    assert client.get("/api/accounts/session/").data["session_state"] == "guest"
+
+
 def test_google_login_creates_session_and_user_when_unlinked(monkeypatch, settings) -> None:
     """Google login verifies a credential and creates a registered session."""
 
@@ -474,6 +574,109 @@ def test_google_login_creates_session_and_user_when_unlinked(monkeypatch, settin
     assert response.data["user"]["email"] == user.email
     assert user.google_id == "google-sub-1"
     assert user.email_verified is True
+
+
+def test_google_login_with_attach_chat_id_attaches_guest_chat(monkeypatch, settings) -> None:
+    """Google login supports attach_chat_id with the same guest ownership checks."""
+
+    settings.WISMO_GOOGLE_CLIENT_ID = "google-client-id"
+    monkeypatch.setattr(
+        "accounts.services.verify_oauth2_token",
+        lambda credential, request, audience: {
+            "sub": "google-attach-sub",
+            "email": "google-attach@example.com",
+            "email_verified": True,
+        },
+    )
+    guest = GuestIdentity.objects.create(expires_at=timezone.now() + timedelta(hours=1))
+    case = Case.objects.create(
+        guest_identity=guest,
+        topic="guest topic",
+        context_summary="guest summary",
+    )
+    chat = Chat.objects.create(
+        guest_identity=guest,
+        case=case,
+        opening_input_text="hello",
+        chat_display_name="Guest Chat",
+    )
+    turn = ChatTurn.objects.create(
+        guest_identity=guest,
+        chat=chat,
+        case=case,
+        user_message_text="guest message",
+        status="completed",
+    )
+    client = api_client_with_guest(guest)
+    response = client.post(
+        "/api/accounts/google/login/",
+        {"credential": "credential-token", "attach_chat_id": str(chat.id)},
+        format="json",
+    )
+
+    user = User.objects.get(email="google-attach@example.com")
+    chat.refresh_from_db()
+    case.refresh_from_db()
+    turn.refresh_from_db()
+
+    assert response.status_code == 200
+    assert response.data["session_state"] == "registered"
+    assert response.data["consent_state"] == "required"
+    assert chat.user_id == user.id
+    assert case.user_id == user.id
+    assert turn.user_id == user.id
+    assert response.cookies[GUEST_COOKIE_NAME]["max-age"] == 0
+
+
+def test_google_login_with_attach_keeps_existing_user_consent_accepted(monkeypatch, settings) -> None:
+    """Google login attach does not force re-consent for a user with active consent."""
+
+    settings.WISMO_GOOGLE_CLIENT_ID = "google-client-id"
+    user = User.objects.create_user(
+        email="google-accepted@example.com",
+        password=PASSWORD,
+        email_verified=True,
+        google_id="google-accepted-sub",
+    )
+    ConsentService().accept(user=user)
+    monkeypatch.setattr(
+        "accounts.services.verify_oauth2_token",
+        lambda credential, request, audience: {
+            "sub": "google-accepted-sub",
+            "email": "google-accepted@example.com",
+            "email_verified": True,
+        },
+    )
+    guest = GuestIdentity.objects.create(expires_at=timezone.now() + timedelta(hours=1))
+    case = Case.objects.create(
+        guest_identity=guest,
+        topic="guest topic",
+        context_summary="guest summary",
+    )
+    chat = Chat.objects.create(
+        guest_identity=guest,
+        case=case,
+        opening_input_text="hello",
+        chat_display_name="Guest Chat",
+    )
+
+    client = api_client_with_guest(guest)
+    response = client.post(
+        "/api/accounts/google/login/",
+        {"credential": "credential-token", "attach_chat_id": str(chat.id)},
+        format="json",
+    )
+
+    chat.refresh_from_db()
+    case.refresh_from_db()
+
+    assert response.status_code == 200
+    assert response.data["session_state"] == "registered"
+    assert response.data["consent_state"] == "accepted"
+    assert chat.user_id == user.id
+    assert case.user_id == user.id
+    assert ConsentRecord.objects.filter(user=user, consent_version=ConsentRecord.CURRENT_VERSION).count() == 1
+    assert response.cookies[GUEST_COOKIE_NAME]["max-age"] == 0
 
 
 def test_google_login_links_existing_email_account_and_reuses_link(monkeypatch, settings) -> None:

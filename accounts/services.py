@@ -30,6 +30,8 @@ from consents.services import ConsentService
 from runtime.models import UsageQuotaWindow
 from wismo.contracts.codes import (
     GUEST_CHAT_NOT_FOUND,
+    GUEST_IDENTITY_NOT_RESOLVED,
+    GUEST_SESSION_EXPIRED,
     IDENTITY_NOT_RESOLVED,
     INVALID_CHAT_ID,
     INVALID_REQUEST,
@@ -268,7 +270,14 @@ class AccountAuthService:
         )
         return user
 
-    def login(self, *, request, email: str, password: str) -> User:
+    def login(
+        self,
+        *,
+        request,
+        email: str,
+        password: str,
+        attach_chat_id: uuid.UUID | None = None,
+    ) -> User:
         """Create a Django session for a verified active user."""
 
         user = User.objects.filter(email__iexact=self.normalize_email(email)).first()
@@ -277,23 +286,42 @@ class AccountAuthService:
         if not user.email_verified:
             raise AccountServiceError("email_verification_required", 403)
 
+        with transaction.atomic():
+            self._attach_guest_chat_if_requested(
+                request=request,
+                user=user,
+                attach_chat_id=attach_chat_id,
+            )
+            user.last_seen_at = timezone.now()
+            user.save(update_fields=["last_seen_at"])
+
         django_login(request, user)
         request.user = user
-        user.last_seen_at = timezone.now()
-        user.save(update_fields=["last_seen_at"])
         return user
 
-    def login_with_google(self, *, request, credential: str) -> GoogleLoginResult:
+    def login_with_google(
+        self,
+        *,
+        request,
+        credential: str,
+        attach_chat_id: uuid.UUID | None = None,
+    ) -> GoogleLoginResult:
         """Verify a Google ID token and create a Django session."""
 
         normalized_credential = self._required_google_credential(credential)
         payload = self.verify_google_credential(normalized_credential)
-        user, created, linked = self.resolve_google_user(payload)
+        with transaction.atomic():
+            user, created, linked = self.resolve_google_user(payload)
+            self._attach_guest_chat_if_requested(
+                request=request,
+                user=user,
+                attach_chat_id=attach_chat_id,
+            )
+            user.last_seen_at = timezone.now()
+            user.save(update_fields=["last_seen_at"])
 
         django_login(request, user)
         request.user = user
-        user.last_seen_at = timezone.now()
-        user.save(update_fields=["last_seen_at"])
         return GoogleLoginResult(user=user, created=created, linked=linked)
 
     def logout(self, *, request) -> None:
@@ -420,6 +448,31 @@ class AccountAuthService:
             raise AccountServiceError(INVALID_REQUEST, 400)
         return credential.strip()
 
+    def _attach_guest_chat_if_requested(
+        self,
+        *,
+        request,
+        user: User,
+        attach_chat_id: uuid.UUID | None,
+    ) -> None:
+        """Attach one guest-owned chat to user when login request asks for it."""
+
+        if attach_chat_id is None:
+            return
+
+        identity_service = IdentityService()
+        guest = identity_service.guest_from_request(request)
+        if guest is None:
+            raise AccountServiceError(GUEST_IDENTITY_NOT_RESOLVED, 401)
+        if not identity_service.is_guest_valid(guest):
+            raise AccountServiceError(GUEST_SESSION_EXPIRED, 401)
+
+        GuestAttachService().attach_current_case(
+            user=user,
+            guest_identity=guest,
+            chat_id=str(attach_chat_id),
+        )
+
     def verify_google_credential(self, credential: str) -> dict[str, Any]:
         """Verify a Google ID token and return its canonical claims."""
 
@@ -534,7 +587,6 @@ class GuestAttachService:
                 Chat.objects.filter(id__in=chat_ids).update(user=user, guest_identity=None)
                 ChatTurn.objects.filter(id__in=turn_ids).update(user=user, guest_identity=None)
 
-                ConsentService().require_reconsent(user=user)
                 UsageQuotaWindow.current_for_identity(user=user)
 
                 return AttachResult(
