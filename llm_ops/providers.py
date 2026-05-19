@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import requests
 
-from llm_ops.errors import LLMGatewayProviderError
+from llm_ops.errors import LLMGatewayProviderError, LLMGatewayProviderUnavailableError
 from llm_ops.models import LLMGatewayConfig, LLMOperation
 from wismo.contracts.enums import LLMGatewayMode, OperationKey
 
@@ -46,26 +47,69 @@ class RequestsTransport:
     """Requests-based transport for real provider HTTP calls."""
 
     def __init__(self, timeout_seconds: int = 60) -> None:
-        """Create a transport with a fixed timeout."""
+        """Create a transport with configurable connect/read timeout."""
 
-        self.timeout_seconds = timeout_seconds
+        connect_timeout = _env_positive_float(
+            "WISMO_LLM_CONNECT_TIMEOUT_SECONDS",
+            default=10.0,
+        )
+        read_timeout = _env_positive_float(
+            "WISMO_LLM_READ_TIMEOUT_SECONDS",
+            default=float(timeout_seconds),
+        )
+        self.connect_timeout_seconds = connect_timeout
+        self.read_timeout_seconds = read_timeout
 
     def send(self, request: LLMProviderRequest) -> LLMProviderResult:
         """Send an HTTP request and normalize the response."""
 
-        response = requests.request(
-            method=request.method,
-            url=request.url,
-            headers=request.headers,
-            json=request.json,
-            timeout=self.timeout_seconds,
-        )
+        try:
+            response = requests.request(
+                method=request.method,
+                url=request.url,
+                headers=request.headers,
+                json=request.json,
+                timeout=(self.connect_timeout_seconds, self.read_timeout_seconds),
+            )
+        except requests.Timeout as exc:
+            logger.warning(
+                "llm_provider_http_timeout url=%s connect_timeout=%s read_timeout=%s error=%s",
+                request.url,
+                self.connect_timeout_seconds,
+                self.read_timeout_seconds,
+                str(exc),
+            )
+            raise LLMGatewayProviderUnavailableError(message=str(exc)) from exc
+        except requests.RequestException as exc:
+            logger.warning(
+                "llm_provider_http_transport_error url=%s connect_timeout=%s read_timeout=%s error=%s",
+                request.url,
+                self.connect_timeout_seconds,
+                self.read_timeout_seconds,
+                str(exc),
+            )
+            raise LLMGatewayProviderUnavailableError(message=str(exc)) from exc
         json_body: dict[str, Any]
         try:
             json_body = response.json()
         except ValueError:
             json_body = {}
         return LLMProviderResult(status_code=response.status_code, json_body=json_body, text=response.text)
+
+
+def _env_positive_float(key: str, *, default: float) -> float:
+    """Read a positive float from env; fallback to default for invalid values."""
+
+    raw_value = os.getenv(key)
+    if raw_value is None:
+        return default
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
 
 
 class LLMProviderAdapter:

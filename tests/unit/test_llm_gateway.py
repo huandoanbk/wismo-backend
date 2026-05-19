@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import requests
 from django.contrib.admin.sites import site
 from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
@@ -32,6 +34,7 @@ from llm_ops.providers import (
     LocalStubLLMAdapter,
     OpenAICompatibleLLMAdapter,
     OpenAIEmbeddingsLLMAdapter,
+    RequestsTransport,
 )
 from llm_ops.services import LLMUsageQueryService
 from runtime.models import OperationalLog, UsageQuotaWindow
@@ -82,6 +85,20 @@ class CapturingTransport:
         from llm_ops.providers import LLMProviderResult
 
         return LLMProviderResult(status_code=self.status_code, json_body=self.response, text="")
+
+
+class _FakeHTTPResponse:
+    """Minimal response object for transport-level tests."""
+
+    def __init__(self, *, status_code: int = 200, payload: dict | None = None, text: str = "") -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text
+
+    def json(self):  # noqa: D401
+        """Return JSON payload."""
+
+        return self._payload
 
 
 def create_turn() -> ChatTurn:
@@ -483,6 +500,50 @@ def test_gateway_trace_recorder_captures_provider_error() -> None:
     assert trace["status"] == LLMUsageStatus.FAILED.value
     assert trace["error_code"] == LLM_GATEWAY_PROVIDER_ERROR
     assert trace["prompt_messages"] == [{"role": "user", "content": "hello"}]
+
+
+def test_requests_transport_uses_env_connect_and_read_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Requests transport uses split connect/read timeout from environment."""
+
+    monkeypatch.setenv("WISMO_LLM_CONNECT_TIMEOUT_SECONDS", "1.25")
+    monkeypatch.setenv("WISMO_LLM_READ_TIMEOUT_SECONDS", "8.5")
+
+    captured: dict[str, object] = {}
+
+    def _fake_request(*, method, url, headers, json, timeout):  # noqa: ANN001
+        captured["timeout"] = timeout
+        return _FakeHTTPResponse(status_code=200, payload={"ok": True}, text='{"ok":true}')
+
+    with patch("llm_ops.providers.requests.request", side_effect=_fake_request):
+        result = RequestsTransport().send(
+            request=SimpleNamespace(
+                method="POST",
+                url="https://example.com/v1/chat/completions",
+                headers={},
+                json={"x": 1},
+            )
+        )
+
+    assert captured["timeout"] == (1.25, 8.5)
+    assert result.status_code == 200
+    assert result.json_body == {"ok": True}
+
+
+def test_requests_transport_maps_timeout_to_provider_unavailable() -> None:
+    """Requests timeout errors are normalized to canonical provider-unavailable."""
+
+    with patch("llm_ops.providers.requests.request", side_effect=requests.Timeout("read timeout")):
+        with pytest.raises(LLMGatewayProviderUnavailableError) as excinfo:
+            RequestsTransport().send(
+                request=SimpleNamespace(
+                    method="POST",
+                    url="https://example.com/v1/chat/completions",
+                    headers={},
+                    json={"x": 1},
+                )
+            )
+
+    assert excinfo.value.code == LLM_GATEWAY_PROVIDER_UNAVAILABLE
 
 
 def test_openai_style_adapter_serializes_conversation_payload() -> None:
