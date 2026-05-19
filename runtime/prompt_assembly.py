@@ -47,9 +47,15 @@ class PromptAssemblyService:
 
         effective_method = method
         data = self._normalized_inputs(state)
+        fallback_reason = ""
         if method == ResponseMethod.TEACH and not self._teach_retrieval_usable(data.get("retrieval_result")):
             effective_method = ResponseMethod.LISTEN
+            fallback_reason = "teach_retrieval_unavailable"
         state.runtime_bundle["effective_response_method"] = effective_method.value
+        if fallback_reason:
+            state.runtime_bundle["effective_response_method_reason"] = fallback_reason
+        else:
+            state.runtime_bundle.pop("effective_response_method_reason", None)
 
         system_prompt, payload, used_fields = self._build_for_method(method=effective_method, data=data)
         compact_applied, payload = self._apply_compact_if_needed(

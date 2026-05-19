@@ -163,12 +163,23 @@ def test_step11_validator_uses_effective_response_method_when_present() -> None:
     ])
     state = _state(method=ResponseMethod.TEACH, retrieval_result=None)
     state.runtime_bundle["effective_response_method"] = "LISTEN"
+    state.runtime_bundle["effective_response_method_reason"] = "teach_retrieval_unavailable"
 
     ResponseGenerationService(gateway).run(state=state)
 
     validator_payload = json.loads(gateway.calls[1]["prompt_messages"][1]["content"])
     assert validator_payload["response_method"] == "LISTEN"
     assert "retrieval_result" not in validator_payload
+    assert validator_payload["validation_context"]["step8_response_method"] == "TEACH"
+    assert validator_payload["validation_context"]["effective_response_method"] == "LISTEN"
+    assert (
+        validator_payload["validation_context"]["effective_response_method_reason"]
+        == "teach_retrieval_unavailable"
+    )
+    assert validator_payload["normalized_reasoning_result"]["action_recommended"] == "LISTEN"
+    assert len(gateway.calls) == 2
+    assert gateway.calls[0]["operation_key"] == OperationKey.RESPONSE_GENERATION
+    assert gateway.calls[1]["operation_key"] == OperationKey.RESPONSE_VALIDATION
 
 
 def test_step11_logic_validation_fail_skips_validator() -> None:

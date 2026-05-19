@@ -252,11 +252,25 @@ class ResponseGenerationService:
         else:
             validation_method = state.response_method
 
+        fallback_reason = state.runtime_bundle.get("effective_response_method_reason")
+        normalized_reasoning_for_validation = self._normalized_reasoning_for_validation(
+            normalized_reasoning_result=state.normalized_reasoning_result,
+            step8_method=state.response_method,
+            validation_method=validation_method,
+            fallback_reason=fallback_reason if isinstance(fallback_reason, str) else "",
+        )
         payload = {
             "candidate_response_text": candidate_response_text,
             "response_method": validation_method.value,
             "current_message": state.runtime_bundle.get("current_message", ""),
-            "normalized_reasoning_result": state.normalized_reasoning_result,
+            "normalized_reasoning_result": normalized_reasoning_for_validation,
+            "validation_context": {
+                "step8_response_method": state.response_method.value,
+                "effective_response_method": validation_method.value,
+                "effective_response_method_reason": (
+                    fallback_reason if isinstance(fallback_reason, str) else ""
+                ),
+            },
         }
         if validation_method == ResponseMethod.TEACH:
             payload["retrieval_result"] = state.runtime_bundle.get("retrieval_result") or {}
@@ -289,6 +303,34 @@ class ResponseGenerationService:
             rewrite_instruction=parsed.get("rewrite_instruction"),
             fallback_recommended=parsed.get("fallback_recommended"),
         )
+
+    @staticmethod
+    def _normalized_reasoning_for_validation(
+        *,
+        normalized_reasoning_result: object,
+        step8_method: ResponseMethod,
+        validation_method: ResponseMethod,
+        fallback_reason: str,
+    ) -> dict[str, Any]:
+        """Normalize reasoning context to the effective method for validator consistency."""
+
+        if not isinstance(normalized_reasoning_result, dict):
+            return {}
+
+        normalized = dict(normalized_reasoning_result)
+        if step8_method == validation_method:
+            return normalized
+
+        # Step 10 may downgrade TEACH->LISTEN when retrieval grounding is unavailable.
+        # Keep validator aligned with the effective method to avoid contradictory checks.
+        normalized["action_recommended"] = validation_method.value
+        if fallback_reason == "teach_retrieval_unavailable" and validation_method == ResponseMethod.LISTEN:
+            normalized["turn_strategy"] = {
+                "focus": "Provide warm reflective support because TEACH retrieval grounding is unavailable this turn.",
+                "angle": "stabilize_emotion",
+                "avoid": ["teaching", "resource_suggestion"],
+            }
+        return normalized
 
     @staticmethod
     def _validation_result(

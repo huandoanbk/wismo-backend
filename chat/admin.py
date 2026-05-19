@@ -98,6 +98,12 @@ class ChatAdmin(admin.ModelAdmin):
 class ChatTurnAdmin(admin.ModelAdmin):
     """Admin view for persisted chat turns."""
 
+    def get_deleted_objects(self, objs, request):
+        """Allow cascade deletion of LLMUsageEvent without requiring explicit delete permission."""
+        deleted_objects, model_count, perms_needed, protected = super().get_deleted_objects(objs, request)
+        perms_needed.discard("llm usage event")
+        return deleted_objects, model_count, perms_needed, protected
+
     list_display = (
         "id",
         "chat",
@@ -128,6 +134,7 @@ class ChatTurnAdmin(admin.ModelAdmin):
     )
     date_hierarchy = "created_at"
     ordering = ("-created_at",)
+    exclude = ("runtime_metadata",)
     readonly_fields = (
         "id",
         "chat",
@@ -139,7 +146,6 @@ class ChatTurnAdmin(admin.ModelAdmin):
         "response_method",
         "triage_decision",
         "status",
-        "runtime_metadata",
         "step_trace_details",
         "input_tokens",
         "cached_input_tokens",
@@ -162,11 +168,29 @@ class ChatTurnAdmin(admin.ModelAdmin):
 
     @admin.display(description="step traces")
     def step_trace_details(self, obj: ChatTurn) -> str:
-        """Render runtime step traces from runtime_metadata in a readable JSON block."""
+        """Render runtime step traces — one block per step, output below llm_calls."""
 
         metadata = obj.runtime_metadata if isinstance(obj.runtime_metadata, dict) else {}
         traces = metadata.get("step_traces", [])
         if not isinstance(traces, list) or not traces:
             return "[]"
-        pretty = json.dumps(traces, ensure_ascii=False, indent=2)
-        return format_html("<pre style='white-space: pre-wrap; max-width: 1200px;'>{}</pre>", pretty)
+
+        # Render keys in reading order: header fields → input → llm_calls (prompt/response) → output.
+        key_order = ("step", "status", "latency_ms", "llm_call_count", "input", "llm_calls", "output")
+        separator = "\n" + "-" * 12 + " END STEP " + "-" * 12 + "\n"
+        parts = []
+        for trace in traces:
+            if not isinstance(trace, dict):
+                parts.append(json.dumps(trace, ensure_ascii=False, indent=2))
+            else:
+                ordered = {k: trace[k] for k in key_order if k in trace}
+                for k, v in trace.items():
+                    if k not in ordered:
+                        ordered[k] = v
+                parts.append(json.dumps(ordered, ensure_ascii=False, indent=2))
+            parts.append(separator)
+
+        return format_html(
+            "<pre style='white-space: pre-wrap; max-width: 1200px;'>{}</pre>",
+            "\n".join(parts),
+        )

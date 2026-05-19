@@ -120,6 +120,7 @@ def test_step10_teach_fallback_to_listen_when_retrieval_missing() -> None:
 
     assert result.prompt_debug_meta["builder_name"] == "build_listen_prompt"
     assert state.runtime_bundle["effective_response_method"] == "LISTEN"
+    assert state.runtime_bundle["effective_response_method_reason"] == "teach_retrieval_unavailable"
     assert "Task: Write one final response text for user in LISTEN mode." in result.prompt_messages[0]["content"]
     assert "Current message:" in result.prompt_messages[1]["content"]
 
