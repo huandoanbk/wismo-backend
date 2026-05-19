@@ -6,9 +6,6 @@ import django.contrib.postgres.indexes
 import django.db.models.deletion
 import pgvector.django.vector
 from django.db import migrations, models
-from pgvector.django import VectorExtension
-
-
 class Migration(migrations.Migration):
 
     initial = True
@@ -17,7 +14,19 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        VectorExtension(),
+        migrations.RunSQL(
+            # Create extension if not exists; skip silently if permission denied (pre-created by superuser).
+            sql="""
+                DO $$
+                BEGIN
+                    CREATE EXTENSION IF NOT EXISTS vector;
+                EXCEPTION WHEN insufficient_privilege THEN
+                    NULL;
+                END
+                $$;
+            """,
+            reverse_sql=migrations.RunSQL.noop,
+        ),
         migrations.CreateModel(
             name='ContentChunk',
             fields=[
