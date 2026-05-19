@@ -57,6 +57,13 @@ class LLMOperation(models.Model):
         on_delete=models.SET_NULL,
         related_name="operations",
     )
+    fallback_gateway = models.ForeignKey(
+        "llm_ops.LLMGatewayConfig",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="fallback_operations",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -66,6 +73,7 @@ class LLMOperation(models.Model):
         ordering = ("code",)
         indexes = [
             models.Index(fields=["gateway", "is_active"], name="idx_llm_op_gw_active"),
+            models.Index(fields=["fallback_gateway", "is_active"], name="idx_llm_op_fallback_gw_active"),
         ]
 
     def __str__(self) -> str:

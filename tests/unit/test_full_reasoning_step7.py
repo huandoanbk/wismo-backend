@@ -99,6 +99,7 @@ def test_step7_calls_full_reasoning_with_runtime_bundle_payload() -> None:
     assert "style_signals_next are updated response-style preferences" in system_prompt
     assert "user_state_signals_next are updated emotional/mental-state signals" in system_prompt
     assert "explicit_profile_facts_next are cumulative factual profile facts" in system_prompt
+    assert "suggested_chat_display_name" not in system_prompt
 
 
 def test_step7_includes_reasoning_control_on_corrective_retry() -> None:
@@ -138,7 +139,7 @@ def test_step7_turn2_payload_includes_current_chat_display_name_for_renaming_dec
     assert payload["chat_display_name_suggestion_context"]["current_chat_display_name"] == "Tên hiện tại"
 
 
-def test_step7_turn1_payload_does_not_include_current_chat_display_name() -> None:
+def test_step7_turn1_payload_includes_empty_current_chat_display_name() -> None:
     orchestrator = RuntimeOrchestrator(llm_gateway=StubGateway(["{}"]))
     state = _build_state()
     state.needs_chat_display_name_suggestion = True
@@ -148,7 +149,8 @@ def test_step7_turn1_payload_does_not_include_current_chat_display_name() -> Non
     payload = json.loads(prompt_messages[1]["content"])
 
     assert payload["chat_display_name_suggestion_context"]["chat_turn_number"] == 1
-    assert "current_chat_display_name" not in payload["chat_display_name_suggestion_context"]
+    assert payload["chat_display_name_suggestion_context"]["current_chat_display_name"] == ""
+    assert "suggested_chat_display_name" in prompt_messages[0]["content"]
 
 
 def test_step7_retries_gateway_provider_errors_up_to_two_times() -> None:

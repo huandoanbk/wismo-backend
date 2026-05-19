@@ -11,6 +11,7 @@ from django.utils.dateparse import parse_date
 
 from llm_ops.models import LLMGatewayConfig, LLMOperation, LLMUsageEvent
 from llm_ops.services import LLMUsageQueryService
+from wismo.contracts.enums import OperationKey
 
 
 class LLMGatewayConfigModelForm(forms.ModelForm):
@@ -66,6 +67,26 @@ class OperationRoutingHealthFilter(admin.SimpleListFilter):
         return queryset
 
 
+class LLMOperationModelForm(forms.ModelForm):
+    """Validate operation-level gateway routing, including optional fallback routing."""
+
+    class Meta:
+        model = LLMOperation
+        fields = "__all__"
+
+    def clean(self):
+        cleaned = super().clean()
+        code = str(cleaned.get("code") or "").strip()
+        gateway = cleaned.get("gateway")
+        fallback_gateway = cleaned.get("fallback_gateway")
+
+        if fallback_gateway is not None and code != OperationKey.RESPONSE_GENERATION.value:
+            raise ValidationError("fallback_gateway is only supported for response_generation.")
+        if gateway is not None and fallback_gateway is not None and gateway.pk == fallback_gateway.pk:
+            raise ValidationError("fallback_gateway must be different from gateway.")
+        return cleaned
+
+
 @admin.register(LLMGatewayConfig)
 class LLMGatewayConfigAdmin(admin.ModelAdmin):
     """Admin view for canonical gateway configuration."""
@@ -80,10 +101,11 @@ class LLMGatewayConfigAdmin(admin.ModelAdmin):
 class LLMOperationAdmin(admin.ModelAdmin):
     """Admin view for LLM operations and gateway bindings."""
 
-    list_display = ("code", "description", "gateway", "routing_health", "is_active", "created_at")
+    form = LLMOperationModelForm
+    list_display = ("code", "description", "gateway", "fallback_gateway", "routing_health", "is_active", "created_at")
     list_filter = ("is_active", "gateway", OperationRoutingHealthFilter)
     search_fields = ("code", "description", "gateway__display_name")
-    autocomplete_fields = ("gateway",)
+    autocomplete_fields = ("gateway", "fallback_gateway")
     ordering = ("code",)
 
     @admin.display(description="routing health")

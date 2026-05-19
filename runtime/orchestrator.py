@@ -21,7 +21,10 @@ from llm_ops.gateway import LLMGateway
 from runtime.embedding import EmbeddingService
 from runtime.finalization import PostTurnFinalizationService
 from runtime.prompt_assembly import PromptAssemblyService
-from runtime.prompts import FULL_REASONING_SYSTEM
+from runtime.prompts import (
+    FULL_REASONING_SYSTEM_NO_CHAT_DISPLAY_NAME,
+    FULL_REASONING_SYSTEM_WITH_CHAT_DISPLAY_NAME,
+)
 from runtime.request_gate import GateResult, RequestGatePipeline
 from runtime.reranker import RerankerClient
 from runtime.response_generation import ResponseGenerationService
@@ -502,14 +505,20 @@ class RuntimeOrchestrator:
             }
         }
         if state.needs_chat_display_name_suggestion:
-            suggestion_context: dict[str, Any] = {"chat_turn_number": state.chat_turn_number}
-            if state.chat_turn_number in {2, 3} and state.chat is not None:
-                suggestion_context["current_chat_display_name"] = state.chat.chat_display_name
+            suggestion_context: dict[str, Any] = {
+                "chat_turn_number": state.chat_turn_number,
+                "current_chat_display_name": state.chat.chat_display_name if state.chat is not None else "",
+            }
             payload["chat_display_name_suggestion_context"] = suggestion_context
         if state.reasoning_control:
             payload["reasoning_control"] = state.reasoning_control
+        system_prompt = (
+            FULL_REASONING_SYSTEM_WITH_CHAT_DISPLAY_NAME
+            if state.needs_chat_display_name_suggestion
+            else FULL_REASONING_SYSTEM_NO_CHAT_DISPLAY_NAME
+        )
         return [
-            {"role": "system", "content": FULL_REASONING_SYSTEM},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
 

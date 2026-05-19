@@ -76,13 +76,84 @@ class LLMGateway:
         turn,
         prompt_messages: list[dict[str, Any]],
     ) -> LLMCompletion:
-        """Run an LLM operation through configured routing and record usage."""
+        """Run an LLM operation through configured routing and record usage.
 
-        started = perf_counter()
+        response_generation supports optional fallback_gateway routing and only
+        triggers fallback when the primary call fails with a gateway error.
+        """
+
         operation_code = operation_key.value if isinstance(operation_key, OperationKey) else str(operation_key)
         operation = self._resolve_operation(operation_code)
-        gateway = operation.gateway
+        try:
+            return self._complete_once(
+                operation=operation,
+                gateway=operation.gateway,
+                turn=turn,
+                prompt_messages=prompt_messages,
+            )
+        except LLMGatewayError as primary_exc:
+            fallback_gateway = operation.fallback_gateway
+            if (
+                operation.code == OperationKey.RESPONSE_GENERATION.value
+                and fallback_gateway is not None
+                and self._is_gateway_error(primary_exc)
+            ):
+                logger.warning(
+                    "llm_gateway_fallback_attempt operation=%s primary_error=%s primary_status=%s turn_id=%s",
+                    operation.code,
+                    primary_exc.code,
+                    primary_exc.status_code,
+                    str(turn.id) if turn is not None else "none",
+                )
+                try:
+                    return self._complete_once(
+                        operation=operation,
+                        gateway=fallback_gateway,
+                        turn=turn,
+                        prompt_messages=prompt_messages,
+                    )
+                except LLMGatewayError as fallback_exc:
+                    logger.error(
+                        "llm_gateway_fallback_failed operation=%s fallback_error=%s fallback_status=%s turn_id=%s",
+                        operation.code,
+                        fallback_exc.code,
+                        fallback_exc.status_code,
+                        str(turn.id) if turn is not None else "none",
+                    )
+                    raise fallback_exc
+            raise
+
+    def _default_adapter_registry(self) -> dict[str, LLMProviderAdapter]:
+        """Return the built-in adapter registry for canonical integration kinds."""
+
+        return {
+            LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value: OpenAICompatibleLLMAdapter(),
+            LLMGatewayIntegrationKind.OPENAI_EMBEDDINGS_V1.value: OpenAIEmbeddingsLLMAdapter(),
+            LLMGatewayIntegrationKind.ANTHROPIC_NATIVE.value: AnthropicNativeLLMAdapter(),
+            LLMGatewayIntegrationKind.AZURE_OPENAI_V1.value: AzureOpenAILLMAdapter(),
+            LLMGatewayIntegrationKind.OPENAI_NATIVE.value: OpenAINativeLLMAdapter(),
+            "local_stub": LocalStubLLMAdapter(),
+        }
+
+    @staticmethod
+    def _is_gateway_error(error: LLMGatewayError) -> bool:
+        """Return whether an error should trigger response-generation fallback."""
+
+        return isinstance(error, (LLMGatewayProviderUnavailableError, LLMGatewayProviderError))
+
+    def _complete_once(
+        self,
+        *,
+        operation: LLMOperation,
+        gateway: LLMGatewayConfig | None,
+        turn,
+        prompt_messages: list[dict[str, Any]],
+    ) -> LLMCompletion:
+        """Run one operation against one gateway without trying fallback."""
+
+        started = perf_counter()
         self._validate_gateway(operation=operation, gateway=gateway)
+        assert gateway is not None  # for type checkers after _validate_gateway guard
 
         try:
             adapter = self._resolve_adapter(gateway)
@@ -193,22 +264,10 @@ class LLMGateway:
         )
         return LLMCompletion(text=provider_response.text, usage_event=usage_event)
 
-    def _default_adapter_registry(self) -> dict[str, LLMProviderAdapter]:
-        """Return the built-in adapter registry for canonical integration kinds."""
-
-        return {
-            LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value: OpenAICompatibleLLMAdapter(),
-            LLMGatewayIntegrationKind.OPENAI_EMBEDDINGS_V1.value: OpenAIEmbeddingsLLMAdapter(),
-            LLMGatewayIntegrationKind.ANTHROPIC_NATIVE.value: AnthropicNativeLLMAdapter(),
-            LLMGatewayIntegrationKind.AZURE_OPENAI_V1.value: AzureOpenAILLMAdapter(),
-            LLMGatewayIntegrationKind.OPENAI_NATIVE.value: OpenAINativeLLMAdapter(),
-            "local_stub": LocalStubLLMAdapter(),
-        }
-
     def _resolve_operation(self, operation_code: str) -> LLMOperation:
         """Resolve the active operation registry entry for one call."""
 
-        operation = LLMOperation.objects.select_related("gateway").filter(code=operation_code).first()
+        operation = LLMOperation.objects.select_related("gateway", "fallback_gateway").filter(code=operation_code).first()
         if operation is None:
             raise LLMGatewayConfigurationError(LLM_GATEWAY_CONFIG_MISSING)
         if not operation.is_active:

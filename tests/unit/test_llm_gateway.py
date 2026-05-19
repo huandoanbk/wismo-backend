@@ -29,6 +29,7 @@ from llm_ops.gateway import LLMGateway
 from llm_ops.models import LLMGatewayConfig, LLMOperation, LLMUsageEvent
 from llm_ops.providers import (
     AnthropicNativeLLMAdapter,
+    LocalStubLLMAdapter,
     OpenAICompatibleLLMAdapter,
     OpenAIEmbeddingsLLMAdapter,
 )
@@ -258,6 +259,183 @@ def test_gateway_provider_error_persists_failure_usage_event() -> None:
     assert usage_event.status == LLMUsageStatus.FAILED.value
     assert usage_event.error_code == LLM_GATEWAY_PROVIDER_ERROR
     assert usage_event.total_billable_tokens == 0
+
+
+def test_response_generation_fallback_gateway_runs_on_provider_error() -> None:
+    """Response generation retries on fallback gateway when primary provider fails."""
+
+    turn = create_turn()
+    primary_gateway = LLMGatewayConfig.objects.create(
+        display_name="Primary Broken Gateway",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://primary.example.com/v1",
+        api_key_ref="PRIMARY_KEY",
+        model_name="primary-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "raising_adapter"},
+        is_active=True,
+    )
+    fallback_gateway = LLMGatewayConfig.objects.create(
+        display_name="Fallback Local Stub",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://fallback.example.com/v1",
+        api_key_ref="FALLBACK_KEY",
+        model_name="fallback-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "local_stub", "allow_stub": True},
+        is_active=True,
+    )
+    operation = LLMOperation.objects.get(code=OperationKey.RESPONSE_GENERATION.value)
+    operation.gateway = primary_gateway
+    operation.fallback_gateway = fallback_gateway
+    operation.save(update_fields=["gateway", "fallback_gateway", "updated_at"])
+
+    gateway = LLMGateway(
+        adapter_registry={
+            "raising_adapter": RaisingAdapter(),
+            "local_stub": LocalStubLLMAdapter(),
+        }
+    )
+    completion = gateway.complete(
+        operation_key=OperationKey.RESPONSE_GENERATION,
+        turn=turn,
+        prompt_messages=[{"role": "user", "content": "hello"}],
+    )
+
+    usage_events = list(turn.llm_usage_events.order_by("created_at"))
+    assert completion.text
+    assert len(usage_events) == 2
+    assert usage_events[0].status == LLMUsageStatus.FAILED.value
+    assert usage_events[0].supplier_name == "Primary Broken Gateway"
+    assert usage_events[0].error_code == LLM_GATEWAY_PROVIDER_ERROR
+    assert usage_events[1].status == LLMUsageStatus.SUCCESS.value
+    assert usage_events[1].supplier_name == "Fallback Local Stub"
+    assert usage_events[1].error_code == ""
+
+
+def test_non_response_generation_does_not_use_fallback_gateway() -> None:
+    """Fallback gateway is ignored for operations other than response_generation."""
+
+    turn = create_turn()
+    primary_gateway = LLMGatewayConfig.objects.create(
+        display_name="Primary Broken Gateway Non Response",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://primary-non-response.example.com/v1",
+        api_key_ref="PRIMARY_NON_RESPONSE_KEY",
+        model_name="primary-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "raising_adapter"},
+        is_active=True,
+    )
+    fallback_gateway = LLMGatewayConfig.objects.create(
+        display_name="Fallback Local Stub Non Response",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://fallback-non-response.example.com/v1",
+        api_key_ref="FALLBACK_NON_RESPONSE_KEY",
+        model_name="fallback-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "local_stub", "allow_stub": True},
+        is_active=True,
+    )
+    LLMOperation.objects.create(
+        code="custom_non_response_operation",
+        description="Custom non-response operation",
+        gateway=primary_gateway,
+        fallback_gateway=fallback_gateway,
+        is_active=True,
+    )
+
+    with pytest.raises(LLMGatewayProviderError) as excinfo:
+        LLMGateway(
+            adapter_registry={
+                "raising_adapter": RaisingAdapter(),
+                "local_stub": LocalStubLLMAdapter(),
+            }
+        ).complete(
+            operation_key="custom_non_response_operation",
+            turn=turn,
+            prompt_messages=[{"role": "user", "content": "hello"}],
+        )
+
+    usage_events = list(turn.llm_usage_events.order_by("created_at"))
+    assert excinfo.value.code == LLM_GATEWAY_PROVIDER_ERROR
+    assert len(usage_events) == 1
+    assert usage_events[0].status == LLMUsageStatus.FAILED.value
+    assert usage_events[0].supplier_name == "Primary Broken Gateway Non Response"
+
+
+def test_response_generation_does_not_fallback_on_configuration_error() -> None:
+    """Fallback routing does not run when primary failure is configuration invalid."""
+
+    turn = create_turn()
+    operation = LLMOperation.objects.select_related("gateway").get(code=OperationKey.RESPONSE_GENERATION.value)
+    fallback_gateway = LLMGatewayConfig.objects.create(
+        display_name="Fallback Local Stub Config Error",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://fallback-config-error.example.com/v1",
+        api_key_ref="FALLBACK_CONFIG_ERROR_KEY",
+        model_name="fallback-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "local_stub", "allow_stub": True},
+        is_active=True,
+    )
+    operation.gateway.is_active = False
+    operation.gateway.save(update_fields=["is_active"])
+    operation.fallback_gateway = fallback_gateway
+    operation.save(update_fields=["fallback_gateway", "updated_at"])
+
+    with pytest.raises(LLMGatewayConfigurationError) as excinfo:
+        LLMGateway().complete(
+            operation_key=OperationKey.RESPONSE_GENERATION,
+            turn=turn,
+            prompt_messages=[{"role": "user", "content": "hello"}],
+        )
+
+    assert excinfo.value.code == LLM_GATEWAY_CONFIG_INVALID
+    assert turn.llm_usage_events.count() == 0
+
+
+def test_response_generation_returns_fallback_error_when_both_gateways_fail() -> None:
+    """When fallback also fails, gateway returns fallback error code."""
+
+    turn = create_turn()
+    primary_gateway = LLMGatewayConfig.objects.create(
+        display_name="Primary Broken Gateway Both Fail",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://primary-both-fail.example.com/v1",
+        api_key_ref="PRIMARY_BOTH_FAIL_KEY",
+        model_name="primary-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "raising_adapter"},
+        is_active=True,
+    )
+    fallback_gateway = LLMGatewayConfig.objects.create(
+        display_name="Fallback Missing Adapter Gateway",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://fallback-both-fail.example.com/v1",
+        api_key_ref="FALLBACK_BOTH_FAIL_KEY",
+        model_name="fallback-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "missing_adapter"},
+        is_active=True,
+    )
+    operation = LLMOperation.objects.get(code=OperationKey.RESPONSE_GENERATION.value)
+    operation.gateway = primary_gateway
+    operation.fallback_gateway = fallback_gateway
+    operation.save(update_fields=["gateway", "fallback_gateway", "updated_at"])
+
+    with pytest.raises(LLMGatewayProviderUnavailableError) as excinfo:
+        LLMGateway(adapter_registry={"raising_adapter": RaisingAdapter()}).complete(
+            operation_key=OperationKey.RESPONSE_GENERATION,
+            turn=turn,
+            prompt_messages=[{"role": "user", "content": "hello"}],
+        )
+
+    usage_events = list(turn.llm_usage_events.order_by("created_at"))
+    assert excinfo.value.code == LLM_GATEWAY_PROVIDER_UNAVAILABLE
+    assert len(usage_events) == 2
+    assert usage_events[0].error_code == LLM_GATEWAY_PROVIDER_ERROR
+    assert usage_events[1].error_code == LLM_GATEWAY_PROVIDER_UNAVAILABLE
 
 
 def test_gateway_trace_recorder_captures_prompt_and_response() -> None:
@@ -584,10 +762,56 @@ def test_llm_gateway_admin_registration_exposes_gateway_and_operations() -> None
         "created_at",
     )
     assert gateway_admin.list_filter == ("integration_kind", "mode", "is_active")
-    assert operation_admin.list_display == ("code", "description", "gateway", "routing_health", "is_active", "created_at")
+    assert operation_admin.list_display == (
+        "code",
+        "description",
+        "gateway",
+        "fallback_gateway",
+        "routing_health",
+        "is_active",
+        "created_at",
+    )
     assert operation_admin.list_filter[0] == "is_active"
     assert operation_admin.list_filter[1] == "gateway"
     assert "gateway__display_name" in operation_admin.search_fields
+
+
+def test_llm_operation_admin_form_rejects_fallback_for_non_response_generation() -> None:
+    """Admin form blocks fallback gateway outside response_generation operation."""
+
+    primary_gateway = LLMGatewayConfig.objects.create(
+        display_name="Admin Primary",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://admin-primary.example.com/v1",
+        api_key_ref="ADMIN_PRIMARY_KEY",
+        model_name="primary-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "local_stub", "allow_stub": True},
+        is_active=True,
+    )
+    fallback_gateway = LLMGatewayConfig.objects.create(
+        display_name="Admin Fallback",
+        integration_kind=LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
+        endpoint_url="https://admin-fallback.example.com/v1",
+        api_key_ref="ADMIN_FALLBACK_KEY",
+        model_name="fallback-model",
+        mode=LLMGatewayMode.CONVERSATION.value,
+        params={"adapter": "local_stub", "allow_stub": True},
+        is_active=True,
+    )
+    operation_admin = site._registry[LLMOperation]
+    form = operation_admin.form(
+        data={
+            "code": OperationKey.FULL_REASONING.value,
+            "description": "Full reasoning",
+            "gateway": str(primary_gateway.id),
+            "fallback_gateway": str(fallback_gateway.id),
+            "is_active": "on",
+        }
+    )
+
+    assert not form.is_valid()
+    assert "fallback_gateway is only supported for response_generation." in form.non_field_errors()
 
 
 def test_runtime_orchestrator_maps_gateway_failure_to_runtime_error() -> None:
