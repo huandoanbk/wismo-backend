@@ -10,8 +10,9 @@ from math import sqrt
 from typing import Any
 
 from django.db.models import QuerySet
+from pgvector.django import CosineDistance
 
-from knowledge.models import ContentChunk
+from knowledge.models import ChunkEmbedding, ContentChunk
 from llm_ops.errors import LLMGatewayError
 from llm_ops.gateway import LLMGateway
 from runtime.embedding import EmbeddingService, EmbeddingServiceError
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 MAX_RETRIEVAL_QUERIES = 3
 RERANK_COVERAGE_BONUS_PER_EXTRA_HIT = 0.25
 DENSE_COVERAGE_BONUS_PER_EXTRA_HIT = 0.03
+DEFAULT_DENSE_POOL_PER_QUERY = 120
+MAX_DENSE_POOL_PER_QUERY = 2000
 
 
 @dataclass(frozen=True)
@@ -359,7 +362,63 @@ class KnowledgeRetrievalService:
     def _load_candidates(self, *, query_vector: list[float]) -> list[dict[str, Any]]:
         """Load enabled candidates and score with dense cosine similarity."""
 
-        rows = self._candidate_queryset()[:30]
+        pool_limit = self._dense_candidate_pool_limit()
+        ann_candidates = self._load_candidates_via_ann(query_vector=query_vector, pool_limit=pool_limit)
+        if ann_candidates:
+            return ann_candidates
+        return self._load_candidates_via_python_cosine(query_vector=query_vector, pool_limit=pool_limit)
+
+    def _load_candidates_via_ann(self, *, query_vector: list[float], pool_limit: int) -> list[dict[str, Any]]:
+        """Load candidates using ANN on embeddings first, then join metadata."""
+
+        try:
+            ann_rows = list(
+                ChunkEmbedding.objects.annotate(
+                    distance=CosineDistance("embedding", query_vector)
+                )
+                .order_by("distance")
+                .values_list("chunk_id", "distance")[:pool_limit]
+            )
+        except Exception:
+            logger.warning(
+                "Step 9 ANN-first retrieval failed; fallback to python cosine scoring.",
+                exc_info=True,
+            )
+            return []
+
+        if not ann_rows:
+            return []
+
+        chunk_ids = [row[0] for row in ann_rows]
+        chunk_by_id = {
+            chunk.id: chunk
+            for chunk in self._candidate_queryset().filter(id__in=chunk_ids)
+        }
+
+        scored: list[dict[str, Any]] = []
+        seen_signatures: set[tuple[int, str]] = set()
+        for chunk_id, distance in ann_rows:
+            chunk = chunk_by_id.get(chunk_id)
+            if chunk is None:
+                continue
+            # Lightweight overlap dedupe by (source, normalized text) before scoring.
+            signature = (chunk.source_document_id, chunk.content_text.strip().lower())
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            score = 1.0 - float(distance)
+            scored.append({"chunk": chunk, "score": score})
+
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        return scored[:10]
+
+    def _load_candidates_via_python_cosine(self, *, query_vector: list[float], pool_limit: int) -> list[dict[str, Any]]:
+        """Fallback dense retrieval path when ANN-first query is unavailable."""
+
+        rows = self._candidate_queryset()
+        if hasattr(rows, "__getitem__"):
+            rows = rows[:pool_limit]
+
         scored: list[dict[str, Any]] = []
         seen_signatures: set[tuple[int, str]] = set()
         for chunk in rows:
@@ -407,7 +466,21 @@ class KnowledgeRetrievalService:
         return ContentChunk.objects.select_related("source_document", "embedding_record").filter(
             state=ContentChunk.STATE_ACTIVE,
             source_document__is_enabled=True,
+            embedding_record__isnull=False,
         )
+
+    @staticmethod
+    def _dense_candidate_pool_limit() -> int:
+        """Return per-query dense pool limit with bounded env override."""
+
+        raw = os.getenv("WISMO_RETRIEVAL_DENSE_POOL_PER_QUERY", str(DEFAULT_DENSE_POOL_PER_QUERY))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_DENSE_POOL_PER_QUERY
+        if value <= 0:
+            return DEFAULT_DENSE_POOL_PER_QUERY
+        return min(value, MAX_DENSE_POOL_PER_QUERY)
 
     @staticmethod
     def _cosine(left: list[float], right: list[float]) -> float:

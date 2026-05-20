@@ -25,6 +25,7 @@ MAX_PROMPT_ESTIMATED_TOKENS = 3500  # default; overridden per-call by RuntimeCon
 MAX_RECENT_TURNS_WHEN_COMPACT = 2
 MAX_RECENT_TURN_TEXT_CHARS = 180
 MAX_CONTEXT_SUMMARY_CHARS_WHEN_COMPACT = 500
+STEP10_RETRIEVAL_PREVIEW_MAX_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,10 @@ class PromptAssemblyService:
         )
         prompt_messages = self._compose(system=system_prompt, payload=payload, method=effective_method)
         estimated_tokens = self._estimate_tokens(prompt_messages)
+        retrieval_debug = self._build_retrieval_debug(
+            effective_method=effective_method,
+            retrieval_result=data.get("retrieval_result"),
+        )
 
         return PromptAssemblyResult(
             prompt_messages=prompt_messages,
@@ -73,6 +78,7 @@ class PromptAssemblyService:
                 "used_fields": sorted(set(used_fields)),
                 "compact_applied": compact_applied,
                 "estimated_tokens": estimated_tokens,
+                **retrieval_debug,
             },
         )
 
@@ -86,6 +92,45 @@ class PromptAssemblyService:
             ResponseMethod.TEACH: "build_teach_prompt",
         }
         return mapping[method]
+
+    @staticmethod
+    def _build_retrieval_debug(
+        *,
+        effective_method: ResponseMethod,
+        retrieval_result: object,
+    ) -> dict[str, object]:
+        """Expose compact retrieval preview metadata in Step 10 traces."""
+
+        retrieval_text = ""
+        source_title = ""
+        if isinstance(retrieval_result, dict):
+            text = retrieval_result.get("retrieval_unit_text")
+            if isinstance(text, str):
+                retrieval_text = text.strip()
+            payload = retrieval_result.get("retrieval_prompt_payload")
+            if isinstance(payload, dict):
+                payload_text = payload.get("content_text_for_prompt")
+                if not retrieval_text and isinstance(payload_text, str):
+                    retrieval_text = payload_text.strip()
+                payload_source_title = payload.get("source_title")
+                if isinstance(payload_source_title, str):
+                    source_title = payload_source_title.strip()
+        preview = PromptAssemblyService._preview_text(retrieval_text, STEP10_RETRIEVAL_PREVIEW_MAX_CHARS)
+        return {
+            "retrieval_included": effective_method == ResponseMethod.TEACH and bool(retrieval_text),
+            "retrieval_unit_chars": len(retrieval_text),
+            "retrieval_unit_preview": preview,
+            "retrieval_source_title": source_title,
+        }
+
+    @staticmethod
+    def _preview_text(text: str, max_chars: int) -> str:
+        """Return a bounded one-line preview string."""
+
+        normalized = " ".join(text.split())
+        if len(normalized) <= max_chars:
+            return normalized
+        return f"{normalized[:max_chars]}...[truncated]"
 
     def _normalized_inputs(self, state) -> dict[str, Any]:
         bundle = state.runtime_bundle if isinstance(state.runtime_bundle, dict) else {}

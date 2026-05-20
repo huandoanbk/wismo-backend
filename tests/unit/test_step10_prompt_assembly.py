@@ -111,6 +111,11 @@ def test_step10_all_modes_include_long_term_memory_block(method: ResponseMethod)
     assert "User concern: newer" in content
     assert "User concern: middle" in content
     assert "User concern: oldest" not in content
+    if method == ResponseMethod.TEACH:
+        assert result.prompt_debug_meta["retrieval_included"] is True
+        assert result.prompt_debug_meta["retrieval_unit_chars"] == len("grounded text")
+        assert result.prompt_debug_meta["retrieval_unit_preview"] == "grounded text"
+        assert result.prompt_debug_meta["retrieval_source_title"] == "Source A"
 
 
 def test_step10_teach_fallback_to_listen_when_retrieval_missing() -> None:
@@ -123,6 +128,27 @@ def test_step10_teach_fallback_to_listen_when_retrieval_missing() -> None:
     assert state.runtime_bundle["effective_response_method_reason"] == "teach_retrieval_unavailable"
     assert "Task: Write one final response text for user in LISTEN mode." in result.prompt_messages[0]["content"]
     assert "Current message:" in result.prompt_messages[1]["content"]
+    assert result.prompt_debug_meta["retrieval_included"] is False
+    assert result.prompt_debug_meta["retrieval_unit_chars"] == 0
+    assert result.prompt_debug_meta["retrieval_unit_preview"] == ""
+
+
+def test_step10_retrieval_preview_is_truncated_in_debug_meta() -> None:
+    retrieval_text = "x" * 700
+    state = _state(
+        method=ResponseMethod.TEACH,
+        retrieval_result={
+            "retrieval_unit_text": retrieval_text,
+            "retrieval_prompt_payload": {"source_title": "Source A", "content_text_for_prompt": retrieval_text},
+        },
+    )
+
+    result = PromptAssemblyService().build(state=state)
+
+    preview = result.prompt_debug_meta["retrieval_unit_preview"]
+    assert isinstance(preview, str)
+    assert preview.endswith("...[truncated]")
+    assert len(preview) < len(retrieval_text)
 
 
 @pytest.mark.parametrize("retrieval_result", [{}, {"retrieval_unit_text": ""}, {"retrieval_prompt_payload": {"content_text_for_prompt": ""}}])
