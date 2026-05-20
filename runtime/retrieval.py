@@ -328,17 +328,41 @@ class KnowledgeRetrievalService:
         seen_signatures: set[tuple[int, str]] = set()
         for chunk in rows:
             record = getattr(chunk, "embedding_record", None)
-            if record is None or not isinstance(record.embedding, list):
+            if record is None:
+                continue
+            embedding_vector = self._coerce_embedding_vector(getattr(record, "embedding", None))
+            if embedding_vector is None:
                 continue
             # Lightweight overlap dedupe by (source, normalized text) before scoring.
             signature = (chunk.source_document_id, chunk.content_text.strip().lower())
             if signature in seen_signatures:
                 continue
             seen_signatures.add(signature)
-            score = self._cosine(query_vector, [float(item) for item in record.embedding])
+            score = self._cosine(query_vector, embedding_vector)
             scored.append({"chunk": chunk, "score": score})
         scored.sort(key=lambda item: item["score"], reverse=True)
         return scored[:10]
+
+    @staticmethod
+    def _coerce_embedding_vector(value: object) -> list[float] | None:
+        """Normalize vector payload from storage into a numeric list."""
+
+        if value is None:
+            return None
+
+        raw = value.tolist() if hasattr(value, "tolist") and callable(getattr(value, "tolist")) else value
+        if isinstance(raw, (str, bytes)):
+            return None
+        if not isinstance(raw, (list, tuple)):
+            return None
+
+        vector: list[float] = []
+        for item in raw:
+            try:
+                vector.append(float(item))
+            except (TypeError, ValueError):
+                return None
+        return vector
 
     @staticmethod
     def _candidate_queryset() -> QuerySet[ContentChunk]:

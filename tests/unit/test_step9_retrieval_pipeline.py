@@ -343,3 +343,43 @@ def test_retrieval_stitch_validator_prompt_has_clear_policy() -> None:
     assert "default to KEEP" in system_prompt
     assert "if prev is null" in system_prompt
     assert "if next is null" in system_prompt
+
+
+def test_load_candidates_accepts_vector_payload_with_tolist() -> None:
+    gateway = DummyGateway([])
+    service = KnowledgeRetrievalService(
+        llm_gateway=gateway,
+        embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+    )
+
+    class VectorLike:
+        def __init__(self, values: list[float]) -> None:
+            self.values = values
+
+        def tolist(self) -> list[float]:
+            return list(self.values)
+
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="T",
+        speaker_or_author="A",
+        source_type="talk",
+    )
+    chunk = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_document=source,
+        source_document_id=source.id,
+        segment_index=1,
+        content_text="chunk-text",
+        content_type="story",
+        topic="x",
+        dharma_concepts=["mind"],
+        embedding_record=SimpleNamespace(embedding=VectorLike([1.0, 0.0])),
+    )
+    service._candidate_queryset = lambda: [chunk]  # type: ignore[assignment]
+
+    candidates = service._load_candidates(query_vector=[1.0, 0.0])
+
+    assert len(candidates) == 1
+    assert candidates[0]["chunk"].id == chunk.id
