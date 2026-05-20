@@ -77,6 +77,9 @@ def _default_api_suffix(integration_kind: str) -> str:
         return "/messages"
     if integration_kind == LLMGatewayIntegrationKind.OPENAI_EMBEDDINGS_V1.value:
         return "/embeddings"
+    if integration_kind == LLMGatewayIntegrationKind.DEEPINFRA_RERANKER_V1.value:
+        # DeepInfra reranker path includes model segment from gateway.model_name.
+        return ""
     return ""
 
 

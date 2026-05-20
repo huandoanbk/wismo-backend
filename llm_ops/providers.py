@@ -441,6 +441,109 @@ class OpenAIEmbeddingsLLMAdapter(LLMProviderAdapter):
         return ""
 
 
+class DeepInfraRerankerLLMAdapter(LLMProviderAdapter):
+    """Adapter for DeepInfra reranker inference endpoint."""
+
+    def build_request(
+        self,
+        *,
+        gateway: LLMGatewayConfig,
+        operation: LLMOperation,
+        prompt_messages: list[dict[str, Any]],
+    ) -> LLMProviderRequest:
+        """Build DeepInfra reranker inference request payload."""
+
+        _ = operation
+        payload = self._extract_payload(prompt_messages)
+        body: dict[str, Any] = {
+            "queries": [payload["query"]],
+            "documents": payload["documents"],
+        }
+        params = dict(gateway.params)
+        for key in ("top_n", "return_documents"):
+            value = params.get(key)
+            if value is not None:
+                body[key] = value
+        model_path = gateway.model_name.strip().lstrip("/")
+        if not model_path:
+            raise LLMGatewayProviderError(message="deepinfra_reranker_model_missing")
+        return LLMProviderRequest(
+            method="POST",
+            url=f"{gateway.endpoint_url.rstrip('/')}/{model_path}",
+            headers=self._headers(gateway),
+            json=body,
+        )
+
+    def parse_response(self, payload: dict[str, Any]) -> LLMProviderResponse:
+        """Normalize DeepInfra reranker response into gateway payload shape."""
+
+        raw_scores = payload.get("scores")
+        if not isinstance(raw_scores, list) or not raw_scores:
+            raise LLMGatewayProviderError(message="deepinfra_reranker_scores_missing")
+
+        scores: list[float] = []
+        for value in raw_scores:
+            try:
+                scores.append(float(value))
+            except (TypeError, ValueError) as exc:
+                raise LLMGatewayProviderError(message="deepinfra_reranker_scores_invalid") from exc
+
+        inference_status = payload.get("inference_status") if isinstance(payload.get("inference_status"), dict) else {}
+        input_tokens = int(payload.get("input_tokens") or inference_status.get("tokens_input") or 0)
+        output_tokens = int(inference_status.get("tokens_generated") or 0)
+        return LLMProviderResponse(
+            text=json.dumps({"scores": scores}, ensure_ascii=False),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+    @staticmethod
+    def _headers(gateway: LLMGatewayConfig) -> dict[str, str]:
+        """Build headers for DeepInfra inference request."""
+
+        params = dict(gateway.params)
+        api_key = params.get("api_key") or params.get("api_key_value") or params.get("api_key_ref") or gateway.api_key_ref
+        headers = {
+            "Authorization": f"bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        extra_headers = params.get("headers")
+        if isinstance(extra_headers, dict):
+            headers.update({str(key): str(value) for key, value in extra_headers.items()})
+        return headers
+
+    @staticmethod
+    def _extract_payload(prompt_messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """Extract query+documents payload from prompt messages."""
+
+        for message in reversed(prompt_messages):
+            content = _stringify_content(message.get("content", ""))
+            if not content:
+                continue
+            try:
+                parsed = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            query = parsed.get("query")
+            if not isinstance(query, str) or not query.strip():
+                continue
+
+            documents = parsed.get("documents")
+            if not isinstance(documents, list):
+                candidates = parsed.get("candidates")
+                if isinstance(candidates, list):
+                    documents = [item.get("text") for item in candidates if isinstance(item, dict)]
+            if not isinstance(documents, list):
+                continue
+            normalized_docs = [str(item).strip() for item in documents if isinstance(item, str) and item.strip()]
+            if not normalized_docs:
+                continue
+            return {"query": query.strip(), "documents": normalized_docs}
+        raise LLMGatewayProviderError(message="deepinfra_reranker_payload_invalid")
+
+
 class AzureOpenAILLMAdapter(OpenAICompatibleLLMAdapter):
     """Adapter for Azure OpenAI v1 chat completions wire contracts."""
 

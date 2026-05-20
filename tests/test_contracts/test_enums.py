@@ -70,6 +70,7 @@ def test_operation_keys_include_mvp_llm_operations() -> None:
         "response_validation",
         "retrieval_query_builder",
         "retrieval_query_embedding",
+        "retrieval_reranker",
         "retrieval_stitch_validator",
         "context_summary_updater",
         "long_term_memory_extractor",

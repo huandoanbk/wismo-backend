@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ from llm_ops.gateway import LLMGateway
 from llm_ops.models import LLMGatewayConfig, LLMOperation, LLMUsageEvent
 from llm_ops.providers import (
     AnthropicNativeLLMAdapter,
+    DeepInfraRerankerLLMAdapter,
     LocalStubLLMAdapter,
     OpenAICompatibleLLMAdapter,
     OpenAIEmbeddingsLLMAdapter,
@@ -142,6 +144,7 @@ def test_bootstrap_helper_seeds_canonical_gateway_config() -> None:
         "local_stub",
         LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
         LLMGatewayIntegrationKind.OPENAI_EMBEDDINGS_V1.value,
+        LLMGatewayIntegrationKind.DEEPINFRA_RERANKER_V1.value,
         LLMGatewayIntegrationKind.ANTHROPIC_NATIVE.value,
         LLMGatewayIntegrationKind.AZURE_OPENAI_V1.value,
         LLMGatewayIntegrationKind.OPENAI_NATIVE.value,
@@ -662,6 +665,55 @@ def test_openai_embeddings_adapter_serializes_embeddings_payload() -> None:
     assert request.json["input"] == "stress management"
     assert response.text == '{"embedding": [0.1, 0.2, 0.3]}'
     assert response.input_tokens == 7
+
+
+def test_deepinfra_reranker_adapter_serializes_inference_payload() -> None:
+    """DeepInfra reranker adapter must call inference endpoint and normalize scores."""
+
+    transport = CapturingTransport(
+        response={
+            "scores": [0.2, 0.9],
+            "input_tokens": 11,
+            "inference_status": {"tokens_generated": 0},
+        }
+    )
+    adapter = DeepInfraRerankerLLMAdapter(transport=transport)
+    gateway = LLMGatewayConfig(
+        display_name="DeepInfra Qwen3 Reranker",
+        integration_kind=LLMGatewayIntegrationKind.DEEPINFRA_RERANKER_V1.value,
+        endpoint_url="https://api.deepinfra.com/v1/inference",
+        api_key_ref="DEEPINFRA_API_KEY",
+        model_name="Qwen/Qwen3-Reranker-4B",
+        mode=LLMGatewayMode.SINGLE_MESSAGE.value,
+        params={},
+    )
+    operation = LLMOperation(code=OperationKey.RETRIEVAL_RERANKER.value, gateway=gateway)
+
+    response = adapter.complete(
+        gateway=gateway,
+        operation=operation,
+        prompt_messages=[
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "query": "q",
+                        "candidates": [
+                            {"chunk_id": "a", "text": "A"},
+                            {"chunk_id": "b", "text": "B"},
+                        ],
+                    }
+                ),
+            },
+        ],
+    )
+
+    request = transport.requests[0]
+    assert request.url.endswith("/Qwen/Qwen3-Reranker-4B")
+    assert request.headers["Authorization"] == "bearer DEEPINFRA_API_KEY"
+    assert request.json == {"queries": ["q"], "documents": ["A", "B"]}
+    assert response.text == '{"scores": [0.2, 0.9]}'
+    assert response.input_tokens == 11
 
 
 def test_local_stub_adapter_requires_allow_stub_flag() -> None:

@@ -27,7 +27,7 @@ from runtime.prompts import (
     FULL_REASONING_SYSTEM_WITH_CHAT_DISPLAY_NAME,
 )
 from runtime.request_gate import GateResult, RequestGatePipeline
-from runtime.reranker import RerankerClient
+from runtime.reranker import CompositeRerankerClient
 from runtime.response_generation import ResponseGenerationService
 from runtime.retrieval import KnowledgeRetrievalService
 from runtime.services import QuotaService, RuntimeBundleService, RuntimeConfigService
@@ -154,7 +154,7 @@ class RuntimeOrchestrator:
         self.bundle_service = RuntimeBundleService()
         self.identity_state_store = self.bundle_service.state_store
         self.embedding_service = EmbeddingService(self.llm_gateway)
-        self.reranker_client = RerankerClient()
+        self.reranker_client = CompositeRerankerClient(llm_gateway=self.llm_gateway)
         self.prompt_assembly_service = PromptAssemblyService()
         self.response_generation_service = ResponseGenerationService(self.llm_gateway)
         self.finalization_service = PostTurnFinalizationService(

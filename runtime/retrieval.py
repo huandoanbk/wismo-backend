@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from math import sqrt
 from typing import Any
@@ -60,10 +61,15 @@ class KnowledgeRetrievalService:
             "merged_candidate_count": 0,
             "query_embedding_model": "",
             "dense_top_k": 0,
-            "reranker_model": "bge-reranker-v2-m3",
+            "reranker_model": os.getenv("WISMO_RERANKER_MODEL", "bge-reranker-v2-m3"),
             "reranker_used": False,
             "reranker_failed": False,
             "reranker_partial_failed": False,
+            "reranker_source": "",
+            "reranker_gateway_failed": False,
+            "reranker_gateway_error": "",
+            "reranker_local_failed": False,
+            "reranker_local_error": "",
             "reranker_multi_query": True,
             "coverage_bonus_per_extra_hit": RERANK_COVERAGE_BONUS_PER_EXTRA_HIT,
             "fallback_to_prerank": False,
@@ -125,16 +131,41 @@ class KnowledgeRetrievalService:
         rerank_score_by_id: dict[str, float] = {}
         rerank_coverage_by_id: dict[str, int] = {}
         rerank_failures = 0
+        rerank_sources: set[str] = set()
         rerank_candidates = [{"chunk_id": str(item["chunk"].id), "text": item["chunk"].content_text} for item in candidates]
         for query in retrieval_queries:
             try:
                 ranked_ids = self.reranker_client.rerank(
                     query=query,
                     candidates=rerank_candidates,
+                    turn=state.turn,
                 )
             except (RerankerError, ValueError):
                 rerank_failures += 1
+                run_meta = getattr(self.reranker_client, "last_run_meta", None)
+                if isinstance(run_meta, dict):
+                    if run_meta.get("gateway_failed"):
+                        debug["reranker_gateway_failed"] = True
+                        if not debug["reranker_gateway_error"]:
+                            debug["reranker_gateway_error"] = str(run_meta.get("gateway_error", ""))
+                    if run_meta.get("local_failed"):
+                        debug["reranker_local_failed"] = True
+                        if not debug["reranker_local_error"]:
+                            debug["reranker_local_error"] = str(run_meta.get("local_error", ""))
                 continue
+            run_meta = getattr(self.reranker_client, "last_run_meta", None)
+            if isinstance(run_meta, dict):
+                source = str(run_meta.get("source", "")).strip()
+                if source:
+                    rerank_sources.add(source)
+                if run_meta.get("gateway_failed"):
+                    debug["reranker_gateway_failed"] = True
+                    if not debug["reranker_gateway_error"]:
+                        debug["reranker_gateway_error"] = str(run_meta.get("gateway_error", ""))
+                if run_meta.get("local_failed"):
+                    debug["reranker_local_failed"] = True
+                    if not debug["reranker_local_error"]:
+                        debug["reranker_local_error"] = str(run_meta.get("local_error", ""))
             for index, chunk_id in enumerate(ranked_ids):
                 score = float(len(ranked_ids) - index)
                 previous = rerank_score_by_id.get(chunk_id, 0.0)
@@ -149,10 +180,15 @@ class KnowledgeRetrievalService:
                 rerank_coverage_by_id=rerank_coverage_by_id,
             )
             debug["reranker_used"] = True
+            if len(rerank_sources) == 1:
+                debug["reranker_source"] = next(iter(rerank_sources))
+            elif len(rerank_sources) > 1:
+                debug["reranker_source"] = "mixed"
         else:
             logger.warning("Step 9 reranker failed; fallback to prerank ordering.")
             debug["reranker_failed"] = True
             debug["fallback_to_prerank"] = True
+            debug["reranker_source"] = "prerank"
             reranked = sorted(
                 candidates,
                 key=lambda item: (

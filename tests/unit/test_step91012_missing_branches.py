@@ -76,7 +76,7 @@ def _service() -> KnowledgeRetrievalService:
     return KnowledgeRetrievalService(
         llm_gateway=_DummyGateway([]),
         embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
-        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates, turn=None: []),
     )
 
 

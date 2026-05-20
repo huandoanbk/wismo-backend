@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import requests
 
 from llm_ops.errors import LLMGatewayProviderError
 from runtime.embedding import EmbeddingService, EmbeddingServiceError
@@ -130,12 +131,27 @@ def test_reranker_client_parses_scores_payload() -> None:
     assert ranked_ids == ["a", "b"]
 
 
+def test_reranker_client_wraps_connection_error() -> None:
+    client = RerankerClient()
+
+    with patch("runtime.reranker.requests.post", side_effect=requests.ConnectionError("down")):
+        with patch.dict(
+            "os.environ",
+            {
+                "WISMO_RERANKER_ENABLED": "true",
+                "WISMO_RERANKER_ENDPOINT": "http://reranker.local/rerank",
+            },
+        ):
+            with pytest.raises(RerankerError, match="reranker_request_failed"):
+                client.rerank(query="q", candidates=[{"chunk_id": "a", "text": "A"}])
+
+
 def test_retrieval_service_reranker_failure_fallback_prerank() -> None:
     gateway = DummyGateway([
         json.dumps({"retrieval_query": "query"}),
     ])
     embedding = SimpleNamespace(embed_query=lambda query, turn: ([1.0, 0.0], {"query_embedding_model": "local"}))
-    reranker = SimpleNamespace(rerank=lambda query, candidates: (_ for _ in ()).throw(RerankerError("boom")))
+    reranker = SimpleNamespace(rerank=lambda query, candidates, turn=None: (_ for _ in ()).throw(RerankerError("boom")))
     service = KnowledgeRetrievalService(
         llm_gateway=gateway,
         embedding_service=embedding,
@@ -193,7 +209,7 @@ def test_retrieval_service_reranks_with_all_retrieval_queries() -> None:
         def __init__(self) -> None:
             self.queries: list[str] = []
 
-        def rerank(self, *, query, candidates):  # noqa: ANN001
+        def rerank(self, *, query, candidates, turn=None):  # noqa: ANN001
             self.queries.append(query)
             return [str(item["chunk_id"]) for item in candidates]
 
@@ -244,7 +260,7 @@ def test_retrieval_service_query_builder_uses_operation_registry() -> None:
     service = KnowledgeRetrievalService(
         llm_gateway=gateway,
         embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
-        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates, turn=None: []),
     )
     state = SimpleNamespace(
         turn=SimpleNamespace(id="t"),
@@ -270,7 +286,7 @@ def test_retrieval_service_query_builder_fallback_marks_error() -> None:
     service = KnowledgeRetrievalService(
         llm_gateway=gateway,
         embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
-        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates, turn=None: []),
     )
     state = SimpleNamespace(
         turn=SimpleNamespace(id="t"),
@@ -289,7 +305,7 @@ def test_retrieval_service_query_builder_accepts_multi_queries() -> None:
     service = KnowledgeRetrievalService(
         llm_gateway=gateway,
         embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
-        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates, turn=None: []),
     )
     state = SimpleNamespace(
         turn=SimpleNamespace(id="t"),
@@ -308,7 +324,7 @@ def test_retrieval_stitch_validator_prompt_has_clear_policy() -> None:
     service = KnowledgeRetrievalService(
         llm_gateway=gateway,
         embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
-        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates, turn=None: []),
     )
 
     source_id = uuid.uuid4()
@@ -350,7 +366,7 @@ def test_load_candidates_accepts_vector_payload_with_tolist() -> None:
     service = KnowledgeRetrievalService(
         llm_gateway=gateway,
         embedding_service=SimpleNamespace(embed_query=lambda query, turn: ([1.0], {})),
-        reranker_client=SimpleNamespace(rerank=lambda query, candidates: []),
+        reranker_client=SimpleNamespace(rerank=lambda query, candidates, turn=None: []),
     )
 
     class VectorLike:

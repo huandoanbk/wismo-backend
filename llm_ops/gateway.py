@@ -23,6 +23,7 @@ from llm_ops.models import LLMGatewayConfig, LLMOperation, LLMUsageEvent
 from llm_ops.providers import (
     AnthropicNativeLLMAdapter,
     AzureOpenAILLMAdapter,
+    DeepInfraRerankerLLMAdapter,
     LLMProviderAdapter,
     LocalStubLLMAdapter,
     OpenAICompatibleLLMAdapter,
@@ -141,6 +142,7 @@ class LLMGateway:
         return {
             LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value: OpenAICompatibleLLMAdapter(),
             LLMGatewayIntegrationKind.OPENAI_EMBEDDINGS_V1.value: OpenAIEmbeddingsLLMAdapter(),
+            LLMGatewayIntegrationKind.DEEPINFRA_RERANKER_V1.value: DeepInfraRerankerLLMAdapter(),
             LLMGatewayIntegrationKind.ANTHROPIC_NATIVE.value: AnthropicNativeLLMAdapter(),
             LLMGatewayIntegrationKind.AZURE_OPENAI_V1.value: AzureOpenAILLMAdapter(),
             LLMGatewayIntegrationKind.OPENAI_NATIVE.value: OpenAINativeLLMAdapter(),
@@ -327,6 +329,7 @@ class LLMGateway:
         if gateway.integration_kind not in {
             LLMGatewayIntegrationKind.OPENAI_COMPATIBLE.value,
             LLMGatewayIntegrationKind.OPENAI_EMBEDDINGS_V1.value,
+            LLMGatewayIntegrationKind.DEEPINFRA_RERANKER_V1.value,
             LLMGatewayIntegrationKind.ANTHROPIC_NATIVE.value,
             LLMGatewayIntegrationKind.AZURE_OPENAI_V1.value,
             LLMGatewayIntegrationKind.OPENAI_NATIVE.value,

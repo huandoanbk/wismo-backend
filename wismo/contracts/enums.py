@@ -89,6 +89,7 @@ class LLMGatewayIntegrationKind(StrEnum):
 
     OPENAI_COMPATIBLE = "openai_compatible"
     OPENAI_EMBEDDINGS_V1 = "openai_embeddings_v1"
+    DEEPINFRA_RERANKER_V1 = "deepinfra_reranker_v1"
     ANTHROPIC_NATIVE = "anthropic_native"
     AZURE_OPENAI_V1 = "azure_openai_v1"
     OPENAI_NATIVE = "openai_native"
@@ -111,6 +112,7 @@ class OperationKey(StrEnum):
     RESPONSE_VALIDATION = "response_validation"
     RETRIEVAL_QUERY_BUILDER = "retrieval_query_builder"
     RETRIEVAL_QUERY_EMBEDDING = "retrieval_query_embedding"
+    RETRIEVAL_RERANKER = "retrieval_reranker"
     RETRIEVAL_STITCH_VALIDATOR = "retrieval_stitch_validator"
     CONTEXT_SUMMARY_UPDATER = "context_summary_updater"
     LONG_TERM_MEMORY_EXTRACTOR = "long_term_memory_extractor"

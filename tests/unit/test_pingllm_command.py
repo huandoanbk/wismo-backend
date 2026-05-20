@@ -48,6 +48,7 @@ def test_build_probe_target_uses_base_endpoint_by_default() -> None:
         (LLMGatewayIntegrationKind.AZURE_OPENAI_V1.value, "/chat/completions"),
         (LLMGatewayIntegrationKind.ANTHROPIC_NATIVE.value, "/messages"),
         (LLMGatewayIntegrationKind.OPENAI_EMBEDDINGS_V1.value, "/embeddings"),
+        (LLMGatewayIntegrationKind.DEEPINFRA_RERANKER_V1.value, ""),
     ],
 )
 def test_default_api_suffix_by_integration(kind: str, suffix: str) -> None:
