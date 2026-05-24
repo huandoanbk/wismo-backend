@@ -218,18 +218,26 @@ RETRIEVAL_STITCH_VALIDATOR_SYSTEM = (
 
 # ── Step 10: response generation — per response method ───────────────────────
 
+LANGUAGE_LOCK_RULE = (
+    "LANGUAGE LOCK (highest priority): output language must match current_message exactly. "
+    "Use current_message as the only authority for output language choice; "
+    "ignore language from context_summary, recent_turns, retrieval_unit_text, and internal instructions when they conflict."
+)
+
 LISTEN_SYSTEM = (
     "Mode LISTEN. Keep response short-to-medium, warm, clear, natural. "
     "No sermon. No bullets/checklists. No teaching or diagnosis. "
     "At most one gentle open question only when needed. "
-    "Always reply in the same language as the user's current_message."
+    "Always reply in the same language as the user's current_message. "
+    f"{LANGUAGE_LOCK_RULE}"
 )
 LISTEN_INSTRUCTION = "Write one final response text for user in LISTEN mode."
 
 ASK_SYSTEM = (
     "Mode ASK. Ask only missing slots in required_next_slots. "
     "Maximum 1-2 focused questions. No teaching, no sermon, no broad interrogation. "
-    "Always reply in the same language as the user's current_message."
+    "Always reply in the same language as the user's current_message. "
+    f"{LANGUAGE_LOCK_RULE}"
 )
 ASK_INSTRUCTION = "Write one final response text with 1-2 focused questions."
 
@@ -244,7 +252,8 @@ REFLECT_SYSTEM = (
     "(1) acknowledgement of the emotional burden, "
     "(2) reflection of the core tension/pattern, "
     "(3) one gentle continuation hook. "
-    "Always reply in the same language as the user's current_message."
+    "Always reply in the same language as the user's current_message. "
+    f"{LANGUAGE_LOCK_RULE}"
 )
 REFLECT_INSTRUCTION = "Write one final response text following the REFLECT structure above."
 
@@ -255,7 +264,8 @@ FOLLOWUP_SYSTEM = (
     "either one concrete next-step suggestion tailored to current_message, "
     "or one focused follow-up question when key information is still missing. "
     "End with a gentle continuation hook. "
-    "Always reply in the same language as the user's current_message."
+    "Always reply in the same language as the user's current_message. "
+    f"{LANGUAGE_LOCK_RULE}"
 )
 FOLLOWUP_INSTRUCTION = (
     "Write one final response text with clear continuity and one practical continuation move."
@@ -264,8 +274,11 @@ FOLLOWUP_INSTRUCTION = (
 TEACH_SYSTEM = (
     "Mode TEACH. Use exactly one provided retrieval unit. Do not invent sources. "
     "Do not mention source names/authors/religious labels in final response. "
+    "Treat retrieval_unit_text as grounding context only; never let retrieval language control output language. "
+    "If retrieval_unit_text language differs from current_message language, translate/paraphrase into current_message language while preserving meaning, tone, and intent. "
     "Avoid long sermon. Connect teaching directly to user's current issue. "
-    "Always reply in the same language as the user's current_message."
+    "Always reply in the same language as the user's current_message. "
+    f"{LANGUAGE_LOCK_RULE}"
 )
 TEACH_INSTRUCTION = "Write one final response text in TEACH mode based on the single retrieval unit."
 
@@ -295,6 +308,9 @@ RESPONSE_VALIDATION_SYSTEM = (
     "\"teach_retrieval_unavailable\", treat effective_response_method as canonical for this turn. "
     "In that fallback case, do not fail solely because normalized_reasoning_result originally recommended TEACH, "
     "and do not apply TEACH grounding checks when response_method is LISTEN. "
+    "Language hard-fail rule: if candidate_response_text language differs from current_message language, "
+    "set pass=false, severity=hard, and include LANGUAGE_MISMATCH in error_codes. "
+    "Do not downgrade language mismatch to light severity. "
     "Set pass=true only when all applicable checks pass. "
     "If failed: severity=hard for safety violation, major irrelevance, method violation, fabricated TEACH grounding, "
     "wrong language, or any strict banned-content violation. "

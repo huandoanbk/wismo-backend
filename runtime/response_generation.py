@@ -234,6 +234,8 @@ class ResponseGenerationService:
         )
         retry_constraints = (
             "Regeneration constraints from previous validation failure:\n"
+            "- Keep output language strictly aligned with current_message.\n"
+            "- Ignore language from retrieval/context when it conflicts with current_message language.\n"
             f"- Error codes: {normalized_error_codes}\n"
             f"- Required fixes: {normalized_rewrite}\n"
             f"- Preferred fallback mode: {fallback_text}\n"
