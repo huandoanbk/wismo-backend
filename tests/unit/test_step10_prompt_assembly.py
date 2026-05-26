@@ -61,6 +61,7 @@ def _state(*, method: ResponseMethod = ResponseMethod.ASK, retrieval_result=None
             "intent": "ask_teaching_or_perspective",
             "case_slots": {"core_problem": "conflict with manager"},
             "required_next_slots": ["trigger", "goal"],
+            "response_language": "en",
             "turn_strategy": {"focus": "continuity", "angle": "gentle", "avoid": ["sermon"]},
             "style_signals_next": ["prefers_brief_response"],
             "user_state_signals_next": ["overwhelmed"],
@@ -106,6 +107,7 @@ def test_step10_all_modes_include_long_term_memory_block(method: ResponseMethod)
     result = PromptAssemblyService().build(state=state)
     content = result.prompt_messages[1]["content"]
 
+    assert "- Target response language: en" in content
     assert "Long-term memory (latest 3 segments):" in content
     assert "User concern: latest" in content
     assert "User concern: newer" in content

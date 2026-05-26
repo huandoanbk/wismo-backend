@@ -72,6 +72,7 @@ def test_step7_calls_full_reasoning_with_runtime_bundle_payload() -> None:
                 {
                     "intent": "unclear",
                     "action_recommended": "ASK",
+                    "response_language": "en",
                     "required_next_slots": ["core_problem"],
                     "case_slots": {"core_problem": "x"},
                     "turn_strategy": {"focus": "f", "angle": "a", "avoid": []},
@@ -199,6 +200,7 @@ def test_step7_control_action_from_llm_is_normalized_to_ask() -> None:
                 {
                     "intent": "continue_previous_topic",
                     "action_recommended": "REDIRECT",
+                    "response_language": "en",
                     "required_next_slots": [],
                     "case_slots": {"core_problem": "too much work", "goal": "finish thesis"},
                     "turn_strategy": {"focus": "f", "angle": "a", "avoid": []},
@@ -216,3 +218,62 @@ def test_step7_control_action_from_llm_is_normalized_to_ask() -> None:
     orchestrator._full_reasoning(state)
 
     assert state.reasoning_result["action_recommended"] == "ASK"
+
+
+def test_step7_response_language_is_normalized_from_llm_output() -> None:
+    gateway = StubGateway(
+        [
+            json.dumps(
+                {
+                    "intent": "emotional_support",
+                    "action_recommended": "LISTEN",
+                    "response_language": "vi",
+                    "required_next_slots": [],
+                    "case_slots": {"core_problem": "x"},
+                    "turn_strategy": {"focus": "f", "angle": "a", "avoid": []},
+                    "explicit_profile_facts_next": [],
+                    "style_signals_next": ["none"],
+                    "user_state_signals_next": ["none"],
+                    "suggested_chat_display_name": None,
+                }
+            )
+        ]
+    )
+    orchestrator = RuntimeOrchestrator(llm_gateway=gateway)
+    state = _build_state()
+
+    orchestrator._full_reasoning(state)
+    orchestrator._validate_and_select_response_method(state)
+
+    assert state.reasoning_result["response_language"] == "vi"
+    assert state.runtime_bundle["response_language"] == "vi"
+
+
+def test_step7_response_language_rejects_generic_label_other() -> None:
+    gateway = StubGateway(
+        [
+            json.dumps(
+                {
+                    "intent": "emotional_support",
+                    "action_recommended": "LISTEN",
+                    "response_language": "other",
+                    "required_next_slots": [],
+                    "case_slots": {"core_problem": "x"},
+                    "turn_strategy": {"focus": "f", "angle": "a", "avoid": []},
+                    "explicit_profile_facts_next": [],
+                    "style_signals_next": ["none"],
+                    "user_state_signals_next": ["none"],
+                    "suggested_chat_display_name": None,
+                }
+            )
+        ]
+    )
+    orchestrator = RuntimeOrchestrator(llm_gateway=gateway)
+    state = _build_state()
+
+    orchestrator._full_reasoning(state)
+    feedback = orchestrator._schema_heavy_issue(state.reasoning_result)
+
+    assert state.reasoning_result["response_language"] == "und"
+    assert feedback is not None
+    assert "response_language_invalid" in feedback["error_codes"]

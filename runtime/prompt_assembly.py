@@ -138,6 +138,9 @@ class PromptAssemblyService:
 
         return {
             "current_message": self._as_text(bundle.get("current_message") or getattr(state.request_payload, "message", "")),
+            "response_language": self._as_text(
+                reasoning.get("response_language") or bundle.get("response_language")
+            ),
             "recent_turns": self._as_recent_turns(bundle.get("recent_turns")),
             "context_summary": self._as_text(bundle.get("context_summary")),
             "style_signals": self._as_string_list(
@@ -291,6 +294,7 @@ class PromptAssemblyService:
     def _build_listen_prompt(self, data: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
         used_fields = [
             "current_message",
+            "response_language",
             "context_summary",
             "recent_turns",
             "style_signals",
@@ -300,6 +304,7 @@ class PromptAssemblyService:
         ]
         payload = {
             "current_message": data["current_message"],
+            "response_language": data["response_language"] or "und",
             "context_summary": data["context_summary"],
             "recent_turns": data["recent_turns"],
             "style_signals": data["style_signals"] or ["neutral_gentle_brief"],
@@ -312,6 +317,7 @@ class PromptAssemblyService:
     def _build_ask_prompt(self, data: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
         used_fields = [
             "current_message",
+            "response_language",
             "context_summary",
             "required_next_slots",
             "case_slots",
@@ -322,6 +328,7 @@ class PromptAssemblyService:
         ]
         payload = {
             "current_message": data["current_message"],
+            "response_language": data["response_language"] or "und",
             "required_next_slots": data["required_next_slots"],
             "case_slots": data["case_slots"],
             "context_summary": data["context_summary"],
@@ -335,6 +342,7 @@ class PromptAssemblyService:
     def _build_reflect_prompt(self, data: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
         used_fields = [
             "current_message",
+            "response_language",
             "context_summary",
             "intent",
             "case_slots",
@@ -346,6 +354,7 @@ class PromptAssemblyService:
 
         payload = {
             "current_message": data["current_message"],
+            "response_language": data["response_language"] or "und",
             "context_summary": data["context_summary"],
             "case_slots": data["case_slots"],
             "intent": data["intent"],
@@ -359,6 +368,7 @@ class PromptAssemblyService:
     def _build_followup_prompt(self, data: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
         used_fields = [
             "current_message",
+            "response_language",
             "context_summary",
             "recent_turns",
             "turn_strategy",
@@ -371,6 +381,7 @@ class PromptAssemblyService:
 
         payload = {
             "current_message": data["current_message"],
+            "response_language": data["response_language"] or "und",
             "context_summary": data["context_summary"],
             "turn_strategy": data["turn_strategy"],
             "case_slots": data["case_slots"],
@@ -385,6 +396,7 @@ class PromptAssemblyService:
     def _build_teach_prompt(self, data: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
         used_fields = [
             "current_message",
+            "response_language",
             "context_summary",
             "turn_strategy",
             "retrieval_result",
@@ -406,6 +418,7 @@ class PromptAssemblyService:
 
         payload = {
             "current_message": data["current_message"],
+            "response_language": data["response_language"] or "und",
             "context_summary": data["context_summary"],
             "turn_strategy": data["turn_strategy"],
             "retrieval_unit_text": retrieval_text,
@@ -473,6 +486,9 @@ class PromptAssemblyService:
 
     def _base_lines(self, payload: dict[str, Any], *, include_recent_turns: bool = False) -> list[str]:
         lines: list[str] = []
+        response_language = payload.get("response_language")
+        if isinstance(response_language, str) and response_language.strip():
+            lines.append(f"- Target response language: {response_language.strip()}")
         current_message = payload.get("current_message")
         lines.append(f"- Current message: {current_message}" if isinstance(current_message, str) and current_message else "- Current message: none")
 

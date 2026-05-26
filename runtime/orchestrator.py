@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -84,6 +85,8 @@ USER_STATE_SIGNAL_VALUES = {
     "defensive",
     "none",
 }
+RESPONSE_LANGUAGE_BLOCKLIST = {"other", "unknown", "mixed"}
+RESPONSE_LANGUAGE_CODE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 DEFAULT_CASE_SLOTS = {
     "core_problem": "",
     "who_involved": "",
@@ -634,6 +637,12 @@ class RuntimeOrchestrator:
         """Normalize full_reasoning output into canonical Step 7 schema."""
 
         parsed = self._parse_reasoning_json(raw_text)
+        response_language_present = "response_language" in parsed
+        normalized_response_language = self._normalize_response_language_code(
+            parsed.get("response_language"),
+            default="und",
+        )
+        response_language_valid = normalized_response_language != "und"
         intent = self._normalize_enum(parsed.get("intent"), INTENT_VALUES, "unclear")
         raw_action = parsed.get("action_recommended")
         action = self._normalize_enum(
@@ -670,6 +679,7 @@ class RuntimeOrchestrator:
         return {
             "intent": intent,
             "action_recommended": action,
+            "response_language": normalized_response_language,
             "required_next_slots": required_slots,
             "case_slots": case_slots,
             "turn_strategy": turn_strategy,
@@ -677,6 +687,8 @@ class RuntimeOrchestrator:
             "style_signals_next": style_signals,
             "user_state_signals_next": user_state_signals,
             "suggested_chat_display_name": suggested_name,
+            "_response_language_present": response_language_present,
+            "_response_language_valid": response_language_valid,
         }
 
     @staticmethod
@@ -760,6 +772,7 @@ class RuntimeOrchestrator:
 
         while True:
             normalized = self._normalize_reasoning_from_state(state.reasoning_result)
+            state.runtime_bundle["response_language"] = normalized.get("response_language", "und")
             schema_heavy_issue = self._schema_heavy_issue(state.reasoning_result)
             normalized["required_next_slots"] = self._remove_fulfilled_required_slots(
                 normalized["required_next_slots"],
@@ -846,6 +859,10 @@ class RuntimeOrchestrator:
                 {item.value for item in CONVERSATIONAL_RESPONSE_METHODS},
                 ResponseMethod.ASK.value,
             ),
+            "response_language": self._normalize_response_language_code(
+                value.get("response_language"),
+                default="und",
+            ),
             "required_next_slots": self._normalize_enum_list(
                 value.get("required_next_slots"),
                 REQUIRED_NEXT_SLOT_VALUES,
@@ -888,6 +905,7 @@ class RuntimeOrchestrator:
         required_core_fields = {
             "intent",
             "action_recommended",
+            "response_language",
             "required_next_slots",
             "case_slots",
             "turn_strategy",
@@ -908,6 +926,13 @@ class RuntimeOrchestrator:
             errors.append("case_slots_not_object")
             must_fix_fields.append("case_slots")
 
+        if reasoning_result.get("_response_language_present") is not True:
+            errors.append("response_language_missing")
+            must_fix_fields.append("response_language")
+        elif reasoning_result.get("_response_language_valid") is not True:
+            errors.append("response_language_invalid")
+            must_fix_fields.append("response_language")
+
         if errors:
             return {
                 "error_type": "schema_fail_heavy",
@@ -916,6 +941,22 @@ class RuntimeOrchestrator:
                 "must_preserve": ["action_recommended"],
             }
         return None
+
+    @staticmethod
+    def _normalize_response_language_code(value: object, *, default: str) -> str:
+        """Normalize response language into a specific language code."""
+
+        if not isinstance(value, str):
+            return default
+        cleaned = value.strip()
+        if not cleaned:
+            return default
+        lowered = cleaned.lower()
+        if lowered in RESPONSE_LANGUAGE_BLOCKLIST:
+            return default
+        if not RESPONSE_LANGUAGE_CODE_PATTERN.fullmatch(cleaned):
+            return default
+        return lowered
 
     @staticmethod
     def _remove_fulfilled_required_slots(required_slots: list[str], case_slots: dict[str, str]) -> list[str]:

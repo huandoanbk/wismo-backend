@@ -78,7 +78,7 @@ CASE_CLASSIFIER_SYSTEM = (
 
 FULL_REASONING_SYSTEM_WITH_CHAT_DISPLAY_NAME = (
     "You are the full_reasoning planner for one counseling turn. "
-    "Return JSON only with keys: intent, action_recommended, required_next_slots, case_slots, "
+    "Return JSON only with keys: intent, action_recommended, response_language, required_next_slots, case_slots, "
     "turn_strategy, style_signals_next, user_state_signals_next, explicit_profile_facts_next, "
     "suggested_chat_display_name. "
     "intent must be exactly one of: emotional_support, self_understanding, ask_how_to_respond, "
@@ -91,6 +91,12 @@ FULL_REASONING_SYSTEM_WITH_CHAT_DISPLAY_NAME = (
     "action_recommended meanings: LISTEN=emotional holding with minimal probing; ASK=collect missing critical case information; "
     "REFLECT=surface pattern/tension for self-understanding without advice; FOLLOWUP=continue known thread with progress continuity; "
     "TEACH=offer grounded perspective/teaching anchored to context. "
+    "response_language is mandatory and must always be returned by this Step 7 output. "
+    "response_language must be a specific language code (BCP-47 style), for example: vi, en, fi, hi, th, es, fr, de, ja, ko, zh-CN, zh-TW, pt-BR. "
+    "Do not return generic labels such as other, unknown, or mixed. "
+    "Determine response_language using only runtime_bundle.current_message of this turn. "
+    "Do not infer response_language from recent_turns, context_summary, or long_term_memory. "
+    "response_language must match the language of runtime_bundle.current_message. "
     "required_next_slots allowed values: core_problem, who_involved, trigger, timeframe, goal, prior_attempt, desired_outcome. "
     "required_next_slots must be empty when action_recommended is not ASK. "
     "required_next_slots meanings: core_problem=main distress/problem; who_involved=people involved; trigger=immediate trigger/event; "
@@ -137,7 +143,7 @@ FULL_REASONING_SYSTEM_WITH_CHAT_DISPLAY_NAME = (
 
 FULL_REASONING_SYSTEM_NO_CHAT_DISPLAY_NAME = (
     "You are the full_reasoning planner for one counseling turn. "
-    "Return JSON only with keys: intent, action_recommended, required_next_slots, case_slots, "
+    "Return JSON only with keys: intent, action_recommended, response_language, required_next_slots, case_slots, "
     "turn_strategy, style_signals_next, user_state_signals_next, explicit_profile_facts_next. "
     "intent must be exactly one of: emotional_support, self_understanding, ask_how_to_respond, "
     "ask_what_to_do, ask_teaching_or_perspective, report_progress, continue_previous_topic, unclear. "
@@ -149,6 +155,12 @@ FULL_REASONING_SYSTEM_NO_CHAT_DISPLAY_NAME = (
     "action_recommended meanings: LISTEN=emotional holding with minimal probing; ASK=collect missing critical case information; "
     "REFLECT=surface pattern/tension for self-understanding without advice; FOLLOWUP=continue known thread with progress continuity; "
     "TEACH=offer grounded perspective/teaching anchored to context. "
+    "response_language is mandatory and must always be returned by this Step 7 output. "
+    "response_language must be a specific language code (BCP-47 style), for example: vi, en, fi, hi, th, es, fr, de, ja, ko, zh-CN, zh-TW, pt-BR. "
+    "Do not return generic labels such as other, unknown, or mixed. "
+    "Determine response_language using only runtime_bundle.current_message of this turn. "
+    "Do not infer response_language from recent_turns, context_summary, or long_term_memory. "
+    "response_language must match the language of runtime_bundle.current_message. "
     "required_next_slots allowed values: core_problem, who_involved, trigger, timeframe, goal, prior_attempt, desired_outcome. "
     "required_next_slots must be empty when action_recommended is not ASK. "
     "required_next_slots meanings: core_problem=main distress/problem; who_involved=people involved; trigger=immediate trigger/event; "
@@ -224,6 +236,8 @@ RETRIEVAL_STITCH_VALIDATOR_SYSTEM = (
 
 LANGUAGE_LOCK_RULE = (
     "LANGUAGE LOCK (highest priority): output language must match current_message exactly. "
+    "Use response_language from payload as the explicit output-language target; it must match current_message language. "
+    "If response_language is missing/invalid, fall back to current_message language and keep output aligned with current_message. "
     "Use current_message as the only authority for output language choice; "
     "ignore language from context_summary, recent_turns, retrieval_unit_text, and internal instructions when they conflict."
 )
